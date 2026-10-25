@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (SQLite)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install (hash-locked, the same wheels as the Docker image)
+        run: pip install --disable-pip-version-check --require-hashes -r requirements-dev.lock.txt
+      - name: Lint
+        run: python -m pyflakes app tests deploy/offline/make_lock.py
+      - name: Tests
+        run: python -m pytest -q -p no:warnings
+
+  test-postgres:
+    name: tests (PostgreSQL)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: backend_iam_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:test@127.0.0.1:5432/backend_iam_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: pip install --disable-pip-version-check --require-hashes -r requirements-dev.lock.txt
+      - name: Tests against PostgreSQL (incl. cross-instance locks and concurrent migrations)
+        run: python -m pytest -q -p no:warnings
+
+  ansible:
+    name: Ansible syntax + lint
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: deploy/ansible
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/deploy/ansible/ansible.cfg
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install --disable-pip-version-check "ansible-core==2.17.7" "ansible-lint==24.12.2"
+      - run: ansible-playbook --syntax-check -i inventories/example/hosts.ini site.yml
+      - run: ansible-lint --profile production site.yml roles/
+
+  image:
+    name: Docker image (offline build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Wheels from the lock file, as deploy/offline/download.sh does
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src python:3.14.7-slim-trixie \
+            pip download --quiet --disable-pip-version-check --no-deps --only-binary=:all: \
+              --require-hashes -r requirements.lock.txt -d vendor/wheels
+      - name: Build with no network
+        run: docker build --network=none -t backend-iam:ci .
+      - name: Smoke test (hardened, like the systemd units)
+        run: |
+          docker run --rm --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges backend-iam:ci --help
+          docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --entrypoint python backend-iam:ci \
+            -c "import app.main, app.web, app.consumer.ad_target, app.bundlesec; print('imports ok')"
