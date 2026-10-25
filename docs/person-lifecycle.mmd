@@ -1,0 +1,30 @@
+---
+title: Person lifecycle driven by producer events (account state in OpenIAM)
+---
+stateDiagram-v2
+    direction LR
+    [*] --> Enabled : hire<br/>saveUser + groups/roles/orgs
+
+    state Active {
+        direction LR
+        Enabled --> Disabled : status sets a hold<br/>(e.g. compliance non_compliant,<br/>training overdue)
+        Disabled --> Disabled : another hold added,<br/>or one of several cleared
+        Disabled --> Enabled : last hold cleared
+        Enabled --> Enabled : update<br/>(fields, group/role/org lists)
+    }
+
+    Active --> Leave : leave<br/>leave-of-absence (optionally scheduled)
+    Leave --> Leave : status changes recorded,<br/>no enable/disable while on leave
+    Leave --> Enabled : return, no holds
+    Leave --> Disabled : return, holds still active
+
+    Active --> Terminated : terminate<br/>(effective_date schedules it)<br/>granted access removed
+    Leave --> Terminated : terminate
+
+    Terminated --> Terminated : hire / update / return refused<br/>rehire is manual
+
+    note right of Terminated
+        Every transition queues AD instructions
+        (enable / disable / add_member / remove_member)
+        for the other site. No AD connection.
+    end note

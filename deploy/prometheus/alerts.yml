@@ -1,0 +1,88 @@
+# Prometheus alert rules for backend-iam. Load with rule_files: [alerts.yml].
+# Scrape targets:
+#   producer site: https://<proxy>/metrics  (or 127.0.0.1:8000/metrics) with an API key
+#                  that has scope metrics:read (bearer_token in the scrape config)
+#   consumer site: 127.0.0.1:9102/metrics   (CONSUMER_METRICS_HOST/PORT)
+groups:
+  - name: backend-iam
+    rules:
+      - alert: BackendIamDown
+        expr: max by (instance) (backend_iam_up) == 0 or absent(backend_iam_up)
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "backend-iam cannot reach its database (or is not scraped)"}
+
+      - alert: BackendIamSyncStale
+        expr: time() - max(backend_iam_sync_last_success_timestamp_seconds) > 1800
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "No successful change-detection run for over 30 min"}
+
+      - alert: BackendIamSyncFailing
+        expr: max(backend_iam_sync_last_run_failed) == 1
+        for: 15m
+        labels: {severity: warning}
+        annotations: {summary: "Change detection keeps failing (see web: Sync runs)"}
+
+      - alert: BackendIamMassDeleteBlocked
+        expr: max(backend_iam_sync_mass_delete_blocked) == 1
+        labels: {severity: critical}
+        annotations: {summary: "A run was refused as a mass delete: review, then allow it in the web"}
+
+      - alert: BackendIamDeadInstructions
+        expr: max(backend_iam_outbox_events{state="dead"}) > 0
+        labels: {severity: warning}
+        annotations: {summary: "Instructions gave up after max attempts (retry them in the web)"}
+
+      - alert: BackendIamOutboxBacklog
+        expr: max(backend_iam_outbox_oldest_pending_seconds) > 3600
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Instructions waiting for over an hour"}
+
+      - alert: BackendIamZipRejected
+        expr: max(backend_iam_consumer_files_24h{status="failed"}) > 0
+        labels: {severity: critical}
+        annotations: {summary: "A zip was rejected (signature, checksum or encryption): possible tampering"}
+
+      - alert: BackendIamZipPartial
+        expr: max(backend_iam_consumer_files_24h{status="partial"}) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations: {summary: "Some records of a zip could not be applied"}
+
+      - alert: BackendIamDomainNotUpdated
+        expr: max by (domain) (backend_iam_consumer_domain_applied_age_seconds) > 86400
+        labels: {severity: warning}
+        annotations: {summary: "Domain {{ $labels.domain }} has had no applied zip for a day"}
+
+      - alert: BackendIamAdPlanWaiting
+        expr: max(backend_iam_ad_plans{status="awaiting_approval"}) > 0
+        for: 1h
+        labels: {severity: info}
+        annotations: {summary: "AD plans are waiting for approval in the oversight web"}
+
+      - alert: BackendIamDrift
+        expr: max by (domain) (backend_iam_drift_differences) > 0
+        labels: {severity: warning}
+        annotations: {summary: "Domain {{ $labels.domain }} differs from its last zip"}
+
+      - alert: BackendIamAuthFailures
+        expr: max(backend_iam_auth_failures_1h) > 20
+        labels: {severity: warning}
+        annotations: {summary: "Many refused logins / API calls in the last hour"}
+
+      - alert: BackendIamUserLocked
+        expr: max(backend_iam_web_users_locked) > 0
+        labels: {severity: info}
+        annotations: {summary: "A web user is locked out after failed logins"}
+
+      - alert: BackendIamAdChangedOutsideConsumer
+        expr: max(backend_iam_ad_unacknowledged_alerts{severity=~"warning|critical"}) > 0
+        labels: {severity: warning}
+        annotations: {summary: "AD was changed without the consumer's instructions (oversight web: AD changes)"}
+
+      - alert: BackendIamProtectedGroupChanged
+        expr: max(backend_iam_ad_unacknowledged_alerts{severity="critical"}) > 0
+        labels: {severity: critical}
+        annotations: {summary: "Membership of a protected AD group (e.g. Domain Admins) changed outside the consumer"}

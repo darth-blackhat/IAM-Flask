@@ -1,0 +1,193 @@
+---
+title: backend-iam - messages between systems
+---
+classDiagram
+    direction LR
+
+    %% ---- Producer (HR / source system) -> backend ----
+    class ProducerEvent {
+        <<POST /producer/events>>
+        +str type  hire|update|terminate|leave|return|status
+        +str employee_id
+        +str event_id  optional, idempotency key
+        +ProducerPerson person  optional
+        +List~str~ groups  optional, full list
+        +List~str~ roles  optional, full list
+        +List~str~ organizations  optional, full list
+        +Map~str,str~ statuses  e.g. compliance: non_compliant
+        +date effective_date  optional
+        +str reason  optional
+    }
+    class ProducerPerson {
+        +str first_name
+        +str last_name
+        +List~EmailIn~ emails
+        +List~PhoneIn~ phones
+        +str metadata_type_id  optional
+        +Map~str,any~ extra  OpenIAM EditUserModel fields
+    }
+    class EmailIn {
+        +str email
+        +str type_id  optional
+        +bool published
+    }
+    class PhoneIn {
+        +str number
+        +str area_code  optional
+        +str country_code  optional
+        +str type_id  optional
+        +bool for_sms
+        +bool published
+    }
+    class ProducerResult {
+        <<response, also producer_activity.result>>
+        +str employee_id
+        +str type
+        +str event_id
+        +bool ok
+        +bool duplicate
+        +str user_id  OpenIAM id
+        +List~str~ actions
+        +List~str~ warnings
+        +str error
+        +List~AdInstruction~ instructions
+    }
+    ProducerEvent *-- ProducerPerson
+    ProducerPerson *-- EmailIn
+    ProducerPerson *-- PhoneIn
+    ProducerEvent ..> ProducerResult : produces
+    ProducerResult *-- AdInstruction
+
+    %% ---- backend -> other site (webhook / file / GET /sync/events) ----
+    class ChangeEvent {
+        <<sync_outbox.payload>>
+        +str event_id  uuid, dedupe key
+        +int seq  delivery order
+        +str type  user.created | producer.hire ...
+        +str entity  user|group|role|organization
+        +str entity_id  OpenIAM id
+        +str action  created|updated|deleted|hire...
+        +str employee_id  producer events
+        +str detected_at  ISO-8601 UTC
+        +int run_id  change detection
+        +Map data  current record
+        +Map previous  last record, on delete
+        +Map~str,FieldChange~ changes  on update
+        +List~AdInstruction~ instructions
+    }
+    class FieldChange {
+        +any old
+        +any new
+    }
+    class AdInstruction {
+        +str instruction_id  uuid
+        +str op  create|update|delete|enable|disable|add_member|remove_member
+        +str object_class  user|group|organizationalUnit
+        +Map~str,str~ key  e.g. employeeID: E1001 or cn: GRP-x
+        +str openiam_id
+        +str source  producer|openiam-change
+        +Map~str,any~ attributes  create / update
+        +List~AttributeChange~ changes  update
+        +MemberRef member  add_member / remove_member
+        +str reason
+        +str lifecycle  terminated|leave|returned
+        +str effective_date
+        +List~str~ holds
+        +Why why
+    }
+    class Why {
+        +str source  source-of-truth|openiam-admin
+        +str summary  human-readable reason
+        +str event  hire|terminate|... source of truth
+        +str event_id
+        +str reason  from the HR event
+        +Map~str,str~ statuses
+        +List~AuditEntry~ audit  openiam-admin
+        +List~str~ also_from_source_of_truth
+        +int run_id
+    }
+    class AuditEntry {
+        <<OpenIAM audit log>>
+        +str audit_id
+        +str at
+        +str by  admin login
+        +str action
+        +str result
+    }
+    class AttributeChange {
+        +str attribute  AD attribute
+        +any old
+        +any new
+    }
+    class MemberRef {
+        +str object_class
+        +Map~str,str~ key
+        +str openiam_id
+    }
+    class WebhookDelivery {
+        <<HTTP POST to target>>
+        +List~ChangeEvent~ events
+        header X-IAM-Timestamp
+        header X-IAM-Signature  sha256=HMAC
+        header X-IAM-Event-Count
+    }
+    ChangeEvent *-- FieldChange
+    ChangeEvent *-- AdInstruction
+    ChangeEvent *-- Why
+    AdInstruction *-- Why
+    Why *-- AuditEntry
+    AdInstruction *-- AttributeChange
+    AdInstruction *-- MemberRef
+    WebhookDelivery o-- ChangeEvent
+
+    %% ---- backend -> consumer site (zip per domain) ----
+    class DomainBundle {
+        <<openiam-DOMAIN-UTC.zip>>
+        +BundleManifest manifest.json
+        +jsonl user.jsonl
+        +jsonl group.jsonl
+        +jsonl organization.jsonl
+        +jsonl role.jsonl
+        +csv  *.csv  optional copies
+        +jsonl ad_instructions.jsonl
+    }
+    class InstructionLine {
+        <<one line of ad_instructions.jsonl>>
+        +int seq  order
+        +str event_id
+        +str event_type
+        +str detected_at
+        +str domain
+        +str entity
+        +str entity_id
+        +str employee_id
+        +AdInstruction instruction
+        +Why why
+        +Map data  record payload
+        +Map previous
+    }
+    class BundleManifest {
+        +int format_version
+        +str domain
+        +str generated_at  ISO-8601 UTC, ordering
+        +str source  live|snapshot
+        +str openiam_base_url
+        +int sync_run_id
+        +bool removed  domain has no records left
+        +int ad_instructions
+        +Map~str,int~ counts  per entity
+        +List~ManifestFile~ files
+    }
+    class ManifestFile {
+        +str name
+        +str entity
+        +str format  jsonl|csv|json
+        +int records
+        +int bytes
+        +str sha256
+    }
+    DomainBundle *-- BundleManifest
+    DomainBundle *-- "*" InstructionLine
+    InstructionLine *-- AdInstruction
+    InstructionLine *-- Why
+    BundleManifest *-- ManifestFile

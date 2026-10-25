@@ -1,0 +1,19 @@
+---
+# Remote site: OpenIAM B (the consumer applies zips here).
+openiam_base_url: https://openiam-b.example.com
+
+# Where the zips arrive on this host (same share, or a synced copy).
+# Inside the container: /data/inbox; consumer.yaml has inbox: /data/inbox,
+# archive: /data/archive, failed: /data/failed.
+backend_iam_mounts_by_service:
+  consumer:
+    /srv/iam-inbox: /data/inbox
+
+# This site has no OpenIAM? Apply to Active Directory instead (consumer.yaml `ad:` section):
+# backend_iam_env_by_service:
+#   consumer: {CONSUMER_TARGET: ad, AD_BIND_PASSWORD: "{{ vault_ad_bind_password }}"}
+#   oversight: {CONSUMER_TARGET: ad, WEB_SECRET_KEY: "{{ vault_oversight_secret_key }}", ...}
+
+# The proxy here serves the oversight UI only.
+backend_iam_proxy_sites:
+  - {name: oversight, listen: 443, upstream: "127.0.0.1:8091"}

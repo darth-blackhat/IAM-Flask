@@ -1,0 +1,9 @@
+---
+# Producer site: OpenIAM A.
+openiam_base_url: https://openiam-a.example.com
+
+# The export folder on the host (e.g. a mounted SMB/NFS share the consumer site reads).
+# Inside the container it is /data/exports; sync.yaml has export.folder: /data/exports.
+backend_iam_mounts_by_service:
+  producer:
+    /srv/iam-exports: /data/exports

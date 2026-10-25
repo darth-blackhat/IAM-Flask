@@ -1,0 +1,12 @@
+[
+  {"type": "hire", "employee_id": "E1001", "event_id": "hr-0001",
+   "person": {"first_name": "Ada", "last_name": "Lovelace",
+              "emails": [{"email": "ada@example.com"}], "extra": {"title": "Analyst"}},
+   "groups": ["Finance", "All Staff"], "roles": ["Employee"], "organizations": ["Finance Dept"]},
+  {"type": "status", "employee_id": "E1001", "event_id": "hr-0002",
+   "statuses": {"training": "overdue"}},
+  {"type": "status", "employee_id": "E1001", "event_id": "hr-0003",
+   "statuses": {"training": "complete"}},
+  {"type": "terminate", "employee_id": "E1001", "event_id": "hr-0004",
+   "effective_date": "2026-12-31", "reason": "resigned"}
+]

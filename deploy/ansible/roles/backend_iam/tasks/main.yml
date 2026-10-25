@@ -1,0 +1,24 @@
+---
+- name: Check the service name
+  ansible.builtin.assert:
+    that: backend_iam_service in backend_iam_services
+    fail_msg: "backend_iam_service must be one of {{ backend_iam_services.keys() | list }}"
+    quiet: true
+
+- name: The services are systemd units
+  ansible.builtin.assert:
+    that: ansible_facts.service_mgr == "systemd"
+    fail_msg: >-
+      systemd is not running on {{ inventory_hostname }} (found {{ ansible_facts.service_mgr }}).
+      On WSL add to /etc/wsl.conf:  [boot] systemd=true  then run `wsl --shutdown` in Windows.
+    quiet: true
+
+- name: Docker
+  ansible.builtin.import_tasks: docker.yml
+
+- name: Image (app services)
+  when: backend_iam_services[backend_iam_service].app | default(true)
+  ansible.builtin.import_tasks: image.yml
+
+- name: Service
+  ansible.builtin.import_tasks: service.yml

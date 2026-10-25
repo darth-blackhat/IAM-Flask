@@ -1,0 +1,2 @@
+export-signing.key: from `iam keys signing keys/export-signing`
+(sync.yaml: export.signing_key_file: /config/export-signing.key)

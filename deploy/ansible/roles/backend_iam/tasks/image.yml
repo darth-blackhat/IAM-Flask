@@ -1,0 +1,106 @@
+---
+# build: one docker build on the control node, then docker save -> copy -> docker load on
+# hosts that do not have this exact build yet. No registry needed.
+# The image carries a label with a hash of its sources; image ids are not comparable
+# across Docker engines (e.g. Docker Desktop vs docker.io).
+- name: Build the image on the control node
+  when: backend_iam_image_source == "build"
+  delegate_to: localhost
+  run_once: true
+  become: "{{ backend_iam_build_become }}"
+  block:
+    - name: Wheels for the offline build are present
+      ansible.builtin.find:
+        paths: "{{ backend_iam_source_dir }}/vendor/wheels"
+        patterns: "*.whl"
+      register: _wheels
+
+    - name: Refuse to build without wheels
+      ansible.builtin.assert:
+        that: _wheels.matched > 0
+        fail_msg: >-
+          {{ backend_iam_source_dir }}/vendor/wheels has no wheels. Run
+          deploy/offline/download.sh on a machine with internet (or fetch the files in
+          deploy/offline/DOWNLOAD-LIST.md) and copy vendor/wheels here.
+        quiet: true
+
+    - name: Base image present on the control node
+      ansible.builtin.command:
+        cmd: "{{ backend_iam_build_docker }} image inspect {{ backend_iam_base_image }}"
+      register: _base
+      changed_when: false
+      failed_when: false
+
+    - name: Load base image from the offline bundle
+      when: _base.rc != 0 and backend_iam_offline_bundle | length > 0
+      ansible.builtin.command:
+        cmd: >-
+          {{ backend_iam_build_docker }} load -i
+          {{ backend_iam_offline_bundle }}/images/{{ backend_iam_base_image | replace(':', '-') }}.tar
+      changed_when: true
+
+    - name: Hash of the image sources
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          cd {{ backend_iam_source_dir }} &&
+          find Dockerfile requirements.lock.txt app -type f
+          ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-32
+        executable: /bin/bash
+      register: _source_hash
+      changed_when: false
+
+    - name: Build image
+      ansible.builtin.command:
+        cmd: >-
+          {{ backend_iam_build_docker }} build --pull=false --network=none
+          --label backend-iam.source={{ _source_hash.stdout }}
+          -t {{ backend_iam_image }} {{ backend_iam_source_dir }}
+      changed_when: false
+
+    - name: Save image to a tarball
+      ansible.builtin.command:
+        cmd: "{{ backend_iam_build_docker }} save -o /tmp/backend-iam-{{ backend_iam_version }}.tar {{ backend_iam_image }}"
+      changed_when: false
+
+- name: Build label of the image on the host
+  when: backend_iam_image_source == "build"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      {{ backend_iam_docker_bin }} image inspect
+      --format {% raw %}'{{ index .Config.Labels "backend-iam.source" }}'{% endraw %} {{ backend_iam_image }}
+  register: _host_source
+  changed_when: false
+  failed_when: false
+
+- name: Ship and load the image
+  when: backend_iam_image_source == "build" and _host_source.stdout != _source_hash.stdout
+  become: true
+  block:
+    - name: Copy image tarball
+      ansible.builtin.copy:
+        src: /tmp/backend-iam-{{ backend_iam_version }}.tar
+        dest: /tmp/backend-iam-{{ backend_iam_version }}.tar
+        mode: "0600"
+
+    - name: Load image
+      ansible.builtin.command:
+        cmd: "{{ backend_iam_docker_bin }} load -i /tmp/backend-iam-{{ backend_iam_version }}.tar"
+      changed_when: true
+      notify: Restart backend-iam service
+
+    - name: Remove tarball
+      ansible.builtin.file:
+        path: /tmp/backend-iam-{{ backend_iam_version }}.tar
+        state: absent
+
+# registry: pull the tag (log the host in to a private registry beforehand).
+- name: Pull image
+  when: backend_iam_image_source == "registry"
+  become: true
+  ansible.builtin.command:
+    cmd: "{{ backend_iam_docker_bin }} pull {{ backend_iam_image }}"
+  register: _pull
+  changed_when: "'Downloaded newer image' in _pull.stdout"
+  notify: Restart backend-iam service

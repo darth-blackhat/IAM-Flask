@@ -1,0 +1,99 @@
+---
+- name: Proxy image present on the host?
+  become: true
+  ansible.builtin.command:
+    cmd: "{{ backend_iam_docker_bin }} image inspect {{ backend_iam_proxy_image }}"
+  register: _proxy_image
+  changed_when: false
+  failed_when: false
+
+- name: Ship the proxy image from the offline bundle
+  when: _proxy_image.rc != 0 and backend_iam_offline_bundle | length > 0
+  become: true
+  block:
+    - name: Copy proxy image tarball
+      ansible.builtin.copy:
+        src: "{{ backend_iam_offline_bundle }}/images/{{ backend_iam_proxy_image | replace(':', '-') | replace('/', '-') }}.tar"
+        dest: /tmp/backend-iam-proxy.tar
+        mode: "0600"
+
+    - name: Load proxy image
+      ansible.builtin.command:
+        cmd: "{{ backend_iam_docker_bin }} load -i /tmp/backend-iam-proxy.tar"
+      changed_when: true
+
+    - name: Remove tarball
+      ansible.builtin.file:
+        path: /tmp/backend-iam-proxy.tar
+        state: absent
+
+- name: Pull the proxy image (online)
+  when: _proxy_image.rc != 0 and backend_iam_offline_bundle | length == 0
+  become: true
+  block:
+    - name: Pull nginx
+      ansible.builtin.command:
+        cmd: "{{ backend_iam_docker_bin }} pull {{ backend_iam_proxy_upstream_image }}"
+      changed_when: true
+
+    - name: Tag it with the proxy image name
+      ansible.builtin.command:
+        cmd: "{{ backend_iam_docker_bin }} tag {{ backend_iam_proxy_upstream_image }} {{ backend_iam_proxy_image }}"
+      changed_when: true
+
+- name: TLS directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ backend_iam_etc }}/proxy/tls"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: TLS files supplied for this host?
+  delegate_to: localhost
+  become: false
+  ansible.builtin.stat:
+    path: "{{ backend_iam_config_src }}/proxy/tls/cert.pem"
+  register: _tls_src
+
+- name: TLS certificate and key (from the inventory)
+  when: _tls_src.stat.exists
+  become: true
+  ansible.builtin.copy:
+    src: "{{ backend_iam_config_src }}/proxy/tls/"
+    dest: "{{ backend_iam_etc }}/proxy/tls/"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart backend-iam service
+
+- name: Self-signed certificate (lab only)
+  when: not _tls_src.stat.exists and backend_iam_proxy_self_signed
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey rsa:3072 -nodes -days 365
+      -subj /CN={{ inventory_hostname }}
+      -addext subjectAltName=DNS:{{ inventory_hostname }},DNS:localhost,IP:127.0.0.1
+      -keyout {{ backend_iam_etc }}/proxy/tls/key.pem -out {{ backend_iam_etc }}/proxy/tls/cert.pem
+    creates: "{{ backend_iam_etc }}/proxy/tls/cert.pem"
+  notify: Restart backend-iam service
+
+- name: Refuse to run the proxy without a certificate
+  when: not _tls_src.stat.exists and not backend_iam_proxy_self_signed
+  become: true
+  ansible.builtin.stat:
+    path: "{{ backend_iam_etc }}/proxy/tls/cert.pem"
+  register: _tls_dst
+  failed_when: not _tls_dst.stat.exists
+
+- name: Nginx configuration
+  become: true
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ backend_iam_etc }}/proxy/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart backend-iam service

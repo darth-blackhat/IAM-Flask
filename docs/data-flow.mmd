@@ -1,0 +1,62 @@
+---
+title: backend-iam - data flow (source of truth and OpenIAM admins to OpenIAM B or AD)
+---
+flowchart LR
+    subgraph SRC["Sources"]
+        direction TB
+        HR["<b>Source of truth</b><br/>HR system<br/>hire, terminate, leave,<br/>compliance, training"]
+        ADM(["<b>OpenIAM admins</b><br/>web console edits"])
+    end
+
+    subgraph PS["Producer site"]
+        direction TB
+        PX1{{"HTTPS proxy<br/>TLS, optional mTLS"}}
+        P["<b>producer service</b><br/>API key + scope<br/>applies events to OpenIAM A"]
+        OA["<b>OpenIAM A</b>"]
+        AU[("OpenIAM A<br/>audit log")]
+        CD["<b>change detection</b><br/>pull + diff"]
+        WHY{"<b>why?</b><br/>source of truth<br/>or admin"}
+        DBA[("PostgreSQL<br/>state, outbox,<br/>activity, audit")]
+        EX["<b>export</b><br/>per domain, field allowlist,<br/>sign (Ed25519), encrypt (age)"]
+        WA["<b>web</b> UI"]
+    end
+
+    SH[/"<b>shared folder</b><br/>DOMAIN/openiam-DOMAIN-UTC.zip.age<br/>data .jsonl/.csv<br/>ad_instructions.jsonl (why + payload)<br/>manifest.json + manifest.sig"/]
+
+    subgraph RS["Consumer site"]
+        direction TB
+        WD["inbox <b>watchdog</b><br/>+ timed scan"]
+        C["<b>consumer service</b><br/>decrypt, verify signature,<br/>checksums, order"]
+        T{"CONSUMER_TARGET"}
+        OB["<b>OpenIAM B</b><br/>records + instructions"]
+        PL["<b>AD plan</b><br/>dry_run / approve / auto"]
+        AD[("<b>Active Directory</b><br/>LDAPS")]
+        AW["<b>AD change watch</b><br/>changes made without<br/>the consumer"]
+        DBB[("PostgreSQL<br/>files, actions, plans,<br/>alerts, drift")]
+        OV["<b>oversight</b> UI<br/>approve plans,<br/>acknowledge alerts"]
+    end
+
+    HR -- "1 event + reason" --> PX1 --> P
+    P -- "2 saveUser, entitle,<br/>terminate, enable/disable" --> OA
+    P -- "3 instructions, why: source-of-truth" --> DBA
+    ADM -- "4 direct edits" --> OA
+    OA -- "5 full pull" --> CD
+    AU -- "6 who / action / when" --> CD
+    CD --> WHY
+    WHY -- "HR: already sent" --> DBA
+    WHY -- "admin: instructions,<br/>why: openiam-admin" --> DBA
+    DBA -- "7 changed data +<br/>pending instructions" --> EX
+    EX -- "8 atomic write" --> SH
+    SH -- "9 arrives" --> WD --> C
+    C --> T
+    T -- "openiam" --> OB
+    T -- "ad (site without OpenIAM)" --> PL
+    PL -- "approved / auto" --> AD
+    AD -. "polled" .-> AW
+    AW -- "alerts" --> DBB
+    C --- DBB
+    OV -. "reads, queues requests" .- DBB
+    WA -. "reads, queues requests" .- DBA
+
+    classDef svc stroke-width:2px
+    class P,C,WA,OV,CD,EX,WD,AW svc

@@ -1,0 +1,13 @@
+---
+# Copy to vault.yml, fill in, then encrypt:  ansible-vault encrypt vault.yml
+# Never commit the unencrypted file.
+vault_openiam_client_id: ""
+vault_openiam_client_secret: ""
+vault_database_url: "postgresql+psycopg://backend_iam:CHANGE_ME@db.example.com:5432/backend_iam"
+vault_backend_api_key: ""
+vault_sync_webhook_secret: ""
+vault_web_password: ""
+vault_web_secret_key: ""            # python -c "import secrets; print(secrets.token_urlsafe(32))"
+vault_oversight_password: ""
+vault_oversight_secret_key: ""
+vault_ad_bind_password: ""          # only for CONSUMER_TARGET=ad

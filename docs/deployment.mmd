@@ -1,0 +1,66 @@
+---
+title: backend-iam - deployment (Ansible -> Docker containers run by systemd, offline capable)
+---
+flowchart TB
+    subgraph CTRL["Control node (Linux or WSL)"]
+        AN["ansible-playbook site.yml<br/>groups: producer, web, consumer, oversight, proxy<br/>secrets: ansible-vault"]
+        IMG["docker build --network=none<br/>wheels from vendor/wheels (sha256-locked)"]
+        OB[/"offline-bundle/<br/>base + proxy image tarballs<br/>Docker .debs"/]
+        OB --> IMG
+        AN --> IMG
+    end
+
+    subgraph HA["Host A - producer site"]
+        direction TB
+        PXA["backend-iam-proxy<br/>nginx :443 web, :8443 API"]
+        UP["backend-iam-producer<br/>127.0.0.1:8000"]
+        UW["backend-iam-web<br/>127.0.0.1:8090"]
+        CA[/"/etc/backend-iam/producer<br/>sync.yaml, producer.yaml,<br/>export-signing.key (ro)"/]
+        XA[/"/srv/iam-exports"/]
+        PXA --> UP
+        PXA --> UW
+        CA --- UP
+        UP --- XA
+    end
+
+    subgraph HB["Host B - consumer site"]
+        direction TB
+        PXB["backend-iam-proxy<br/>nginx :443 oversight"]
+        UC["backend-iam-consumer<br/>metrics 127.0.0.1:9102"]
+        UO["backend-iam-oversight<br/>127.0.0.1:8091"]
+        CB[/"/etc/backend-iam/consumer<br/>consumer.yaml, export-signing.pub,<br/>site.age, ad-ca.pem (ro)"/]
+        IB[/"/srv/iam-inbox"/]
+        PXB --> UO
+        CB --- UC
+        UC --- IB
+    end
+
+    PGA[("PostgreSQL A")]
+    PGB[("PostgreSQL B")]
+    OIA["OpenIAM A"]
+    OIB["OpenIAM B"]
+    ADS[("Active Directory<br/>(CONSUMER_TARGET=ad)")]
+    HRS(["HR system<br/>API key, optional mTLS"])
+    OPS(["Operators<br/>browser"])
+    PROM(["Prometheus<br/>alerts.yml"])
+
+    IMG -- "docker save / load" --> HA
+    IMG -- "docker save / load" --> HB
+    AN -- "units, 0600 env files,<br/>configs, TLS" --> HA
+    AN -- "units, 0600 env files,<br/>configs, TLS" --> HB
+
+    UP --> PGA
+    UW --> PGA
+    UP --> OIA
+    UC --> PGB
+    UO --> PGB
+    UC --> OIB
+    UC -. "LDAPS" .-> ADS
+    XA -. "share / sync" .-> IB
+    HRS --> PXA
+    OPS --> PXA
+    OPS --> PXB
+    PROM -. "/metrics" .-> UP
+    PROM -. "/metrics" .-> UC
+
+    NOTE["Every container: read-only root, cap-drop ALL,<br/>no-new-privileges, uid 10001, journald logs"]

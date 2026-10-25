@@ -1,0 +1,96 @@
+---
+- name: Docker already installed?
+  ansible.builtin.stat:
+    path: "{{ backend_iam_docker_bin }}"
+  register: _docker_cli
+
+# Offline: install from .deb files downloaded by deploy/offline/download.sh --debs <distro>.
+- name: Install Docker from local packages (offline)
+  when:
+    - backend_iam_install_docker
+    - backend_iam_docker_debs_dir | length > 0
+    - not _docker_cli.stat.exists
+  become: true
+  block:
+    - name: Copy Docker packages
+      ansible.builtin.copy:
+        src: "{{ backend_iam_docker_debs_dir }}/"
+        dest: /tmp/backend-iam-debs/
+        mode: "0644"
+
+    # dpkg in one call: the bundle carries every dependency, and nothing is fetched.
+    - name: Install Docker packages (no download)
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          DEBIAN_FRONTEND=noninteractive dpkg -i --force-confold /tmp/backend-iam-debs/*.deb
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Remove copied packages
+      ansible.builtin.file:
+        path: /tmp/backend-iam-debs
+        state: absent
+
+# Online, or through an internal apt mirror.
+- name: Install Docker from apt (Debian / Ubuntu)
+  when:
+    - backend_iam_install_docker
+    - backend_iam_docker_debs_dir | length == 0
+    - ansible_facts.os_family == "Debian"
+  become: true
+  block:
+    - name: Docker engine
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: "{{ backend_iam_apt_update }}"
+        cache_valid_time: 3600
+
+    - name: Docker CLI present
+      ansible.builtin.stat:
+        path: /usr/bin/docker
+      register: _docker_cli_after
+
+    # Debian 13+ ships the CLI separately from docker.io.
+    - name: Docker CLI (separate package on newer releases)
+      when: not _docker_cli_after.stat.exists
+      ansible.builtin.apt:
+        name: docker-cli
+        state: present
+
+- name: Refuse to guess how to install Docker on other distributions
+  when:
+    - backend_iam_install_docker
+    - backend_iam_docker_debs_dir | length == 0
+    - ansible_facts.os_family != "Debian"
+  ansible.builtin.fail:
+    msg: >-
+      Automatic Docker install supports Debian/Ubuntu only. Install Docker on
+      {{ ansible_facts.distribution }} yourself and set backend_iam_install_docker: false.
+
+- name: Docker engine answers (Docker Desktop / preinstalled Docker)
+  when: not backend_iam_install_docker
+  become: true
+  ansible.builtin.command:
+    cmd: "{{ backend_iam_docker_bin }} version --format '{% raw %}{{.Server.Version}}{% endraw %}'"
+  register: _engine
+  changed_when: false
+  failed_when: false
+
+- name: Explain how to reach Docker
+  when: not backend_iam_install_docker and _engine.rc != 0
+  ansible.builtin.fail:
+    msg: >-
+      {{ backend_iam_docker_bin }} cannot reach a Docker engine ({{ _engine.stderr | default(_engine.msg) | trim }}).
+      With Docker Desktop: start it, then Settings > Resources > WSL integration > enable
+      this distro (it provides /usr/bin/docker in WSL). Or set backend_iam_install_docker: true
+      to install docker.io inside the distro instead.
+
+- name: Docker is running and starts on boot
+  when: backend_iam_docker_unit | length > 0
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ backend_iam_docker_unit }}"
+    state: started
+    enabled: true

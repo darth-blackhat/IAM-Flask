@@ -1,0 +1,2 @@
+export-signing.pub, site-b.age (iam keys age), ad-ca.pem for LDAPS.
+consumer.yaml refers to them as /config/<file>.

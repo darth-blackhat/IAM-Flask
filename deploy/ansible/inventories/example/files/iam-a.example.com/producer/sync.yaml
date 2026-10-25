@@ -1,0 +1,122 @@
+# Change detection: copy to sync.yaml and adjust.
+#
+# OpenIAM has no change feed, so every interval the backend pulls each entity type in
+# full, diffs it against the last copy (data/sync.db), and sends created / updated /
+# deleted events to the target. Changes are still made in OpenIAM; AD is not involved.
+#
+# The group / organization / role search paths and criteria below are NOT confirmed
+# by OpenIAM's docs (they are deployment-specific). Check them against
+#   iam api-docs        (or GET /openiam/api-docs)
+# and test each with `iam raw POST <path> --body '{...}'` before enabling.
+
+interval_seconds: 300
+# Block a run if more than 20% of an entity type vanished at once (5+ records).
+max_delete_ratio: 0.2
+mass_delete_min: 5
+batch_size: 100
+max_attempts: 20
+
+entities:
+  user:
+    path: /webconsole/rest/api/users/search
+    # Search requires at least one criterion. The union of these queries must return
+    # EVERY user, or the missing ones are reported as deleted. Replace with criteria
+    # that work on your deployment (e.g. one query per organization or per status).
+    queries:
+      - { lastName: "*" }
+    id_field: id
+    page_size: 100
+    # Fields that change without anyone editing the user.
+    ignore_fields: [lastLogin, lastLoginIP, lastDate, lastUpdate, prevLogin, lastPwdChange]
+
+  group:
+    path: /webconsole/rest/api/groups/search
+    queries:
+      - { name: "*" }
+
+  organization:
+    path: /webconsole/rest/api/organizations/search
+    queries:
+      - { name: "*" }
+
+  role:
+    path: /webconsole/rest/api/roles/search
+    queries:
+      - { name: "*" }
+
+# Where changes go. Default: inside the per-domain zips (see `export` below): each zip
+# carries ad_instructions.jsonl with every instruction for that domain, its `why` and the
+# record data. Nothing connects to AD.
+target:
+  type: zip
+
+# target:
+#   type: webhook         # POST batches to the other site (HMAC-signed)
+#   url: https://other-site.example.com/iam/events
+#   secret_env: SYNC_WEBHOOK_SECRET
+#   headers: {}
+
+# target:
+#   type: file            # JSON lines, one event per line
+#   path: data/events.jsonl
+
+# target:
+#   type: none            # other site pulls GET /sync/events?after=<last seq>
+
+# AD instructions: every change event (from change detection and from the producer)
+# carries "instructions" the other site applies to its AD, e.g.
+#   {"op": "add_member", "object_class": "group", "key": {"cn": "GRP-Finance-RW"},
+#    "member": {"object_class": "user", "key": {"employeeID": "E1001"}}, ...}
+# This backend never connects to a domain controller.
+ad:
+  classes: { user: user, group: group, role: group, organization: organizationalUnit }
+  keys: { user: employeeID, group: cn, role: cn, organization: ou }
+  attributes:
+    user: { firstName: givenName, lastName: sn, title: title, login: sAMAccountName,
+            email: mail, employeeId: employeeID, phone: telephoneNumber }
+    group: { name: cn, description: description }
+    role: { name: cn, description: description }
+    organization: { name: ou, description: description }
+  on_user_delete: disable          # or: delete
+  # user_status_field: <status field in user search results>
+  # user_disabled_values: [DISABLED, LOCKED]
+
+# Per-domain export: one zip per domain into a folder (local or a mounted share).
+#   iam sync export            # pull everything now, write zips for changed/new domains
+#   iam sync export --force    # every domain
+export:
+  folder: /data/exports        # container path; the deploy mounts the share here
+  formats: [jsonl, csv]        # the consumer needs jsonl (or json)
+  keep: 30                     # zips kept per domain
+  after_sync: true             # required with target type zip
+  domains:
+    # Field naming each record's domain: CHECK the real field in a search result
+    # (`iam raw POST /webconsole/rest/api/users/search --body '{"lastName": "*"}'`).
+    # Every distinct value becomes its own zip; new domains appear automatically.
+    by_field: { user: domain, group: domain, organization: domain }
+    shared: [role]             # copied into every domain's zip
+    unassigned: _unassigned    # records with no domain (null: leave them out)
+  # Data minimization: only these fields leave the site (ids + domain field always kept).
+  fields:
+    user: [firstName, lastName, employeeId, email, title, login, domain, status]
+  # Sign every manifest (iam keys signing /config/export-signing) and encrypt every zip
+  # to the consumer sites' age recipients (iam keys age, run on each consumer site).
+  signing_key_file: null       # /config/export-signing.key
+  encrypt_to: []               # ["age1...site-b..."]
+
+# Who changed what directly in OpenIAM: read the audit log each run and attach
+# who / action / when to the `why` of admin changes. Best effort: if the query fails,
+# changes are still sent, without audit details. Only /rest/api/auditlog is confirmed by
+# OpenIAM's docs: verify the path, the time criterion and the field names in api-docs.
+audit:
+  search_path: /webconsole/rest/api/auditlog/search
+  since_criterion: fromDate    # not "from"/"size": those page every search
+  since_format: epoch_ms       # epoch_ms | epoch_s | iso
+  fields:
+    id: id
+    time: timestamp
+    actor: principal           # login of the admin
+    actor_id: userId
+    action: action
+    result: result
+    target_id: targets.targetId

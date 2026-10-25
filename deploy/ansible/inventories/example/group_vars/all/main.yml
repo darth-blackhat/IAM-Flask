@@ -1,0 +1,39 @@
+---
+backend_iam_version: "0.1.0"
+backend_iam_image_source: build        # or: registry (+ backend_iam_image: registry/.../backend-iam:0.1.0)
+
+# Settings common to every service on a host. Secrets come from vault.yml (vault_*).
+backend_iam_env:
+  OPENIAM_BASE_URL: "{{ openiam_base_url }}"
+  OPENIAM_CLIENT_ID: "{{ vault_openiam_client_id }}"
+  OPENIAM_CLIENT_SECRET: "{{ vault_openiam_client_secret }}"
+  OPENIAM_VERIFY_TLS: "true"
+  DATABASE_URL: "{{ vault_database_url }}"
+  DATABASE_SCHEMA: backend_iam
+  LOG_LEVEL: INFO
+
+backend_iam_env_by_service:
+  producer:
+    BACKEND_API_KEY: "{{ vault_backend_api_key }}"
+    SYNC_WEBHOOK_SECRET: "{{ vault_sync_webhook_secret }}"
+  web:
+    WEB_USERNAME: admin
+    WEB_PASSWORD: "{{ vault_web_password }}"           # first admin only
+    WEB_SECRET_KEY: "{{ vault_web_secret_key }}"
+  consumer:
+    CONSUMER_TARGET: openiam                             # or: ad (site without OpenIAM)
+    AD_BIND_PASSWORD: "{{ vault_ad_bind_password }}"
+  oversight:
+    CONSUMER_TARGET: openiam
+    WEB_USERNAME: admin
+    WEB_PASSWORD: "{{ vault_oversight_password }}"
+    WEB_SECRET_KEY: "{{ vault_oversight_secret_key }}"
+
+# ---- no internet --------------------------------------------------------------
+# Prepare once on a machine with internet: deploy/offline/download.sh (see
+# deploy/offline/DOWNLOAD-LIST.md), then bring vendor/wheels/ and offline-bundle/ here.
+backend_iam_offline_bundle: "{{ playbook_dir }}/../../offline-bundle"
+# Hosts without Docker and without an apt mirror: .debs for their distribution
+# (download.sh --debs ubuntu:24.04).
+# backend_iam_docker_debs_dir: "{{ playbook_dir }}/../../offline-bundle/debs/ubuntu-24.04"
+# backend_iam_apt_update: false

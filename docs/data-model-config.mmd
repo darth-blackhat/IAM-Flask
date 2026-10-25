@@ -1,0 +1,208 @@
+---
+title: backend-iam - configuration (pydantic models)
+---
+classDiagram
+    direction TB
+
+    class Settings {
+        <<.env / environment>>
+        +str openiam_base_url
+        +str openiam_client_id
+        +secret openiam_client_secret
+        +bool openiam_verify_tls
+        +str database_url
+        +str database_schema
+        +str sync_config_path
+        +bool sync_schedule
+        +str producer_config_path
+        +str consumer_config_path
+        +secret backend_api_key
+        +str web_username
+        +secret web_password
+        +str log_level
+        +bool log_json
+        +str log_file
+    }
+
+    %% ---- sync.yaml (producer site) ----
+    class SyncConfig {
+        <<sync.yaml>>
+        +int interval_seconds
+        +float max_delete_ratio
+        +int mass_delete_min
+        +int batch_size
+        +int max_attempts
+        +Map~str,EntityConfig~ entities
+        +Target target
+        +ExportConfig export  optional
+        +AdMapping ad
+        +AuditConfig audit  optional
+    }
+    class AuditConfig {
+        +str search_path
+        +Map criteria
+        +str since_criterion  not from/size
+        +str since_format  epoch_ms|epoch_s|iso
+        +int page_size
+        +int max_records
+        +AuditFields fields
+    }
+    class AuditFields {
+        +str id
+        +str time
+        +str actor
+        +str actor_id
+        +str action
+        +str result
+        +str target_id  dotted path
+    }
+    class EntityConfig {
+        +str path  search endpoint
+        +List~Map~ queries  union covers all records
+        +str id_field
+        +int page_size
+        +List~str~ ignore_fields
+        +List~str~ include_fields
+    }
+    class Target {
+        <<one of>>
+        WebhookTarget: url, secret_env, headers
+        FileTarget: path
+        NoTarget: pull via GET /sync/events
+        ZipTarget: ad_instructions.jsonl in each domain zip
+    }
+    class ExportConfig {
+        +str folder
+        +List~str~ formats  jsonl|csv|json
+        +int keep  zips per domain
+        +bool subfolder_per_domain
+        +bool after_sync
+        +DomainSplit domains
+        +Map~str,List~str~~ fields  allowlist
+        +str signing_key_file  Ed25519
+        +List~str~ encrypt_to  age recipients
+    }
+    class DomainSplit {
+        +Map~str,str~ by_field  entity -> dotted path
+        +List~str~ shared  in every domain zip
+        +str unassigned
+        +List~str~ only
+    }
+    class AdMapping {
+        +Map~str,str~ classes  entity -> AD objectClass
+        +Map~str,Map~ attributes  field -> AD attribute
+        +Map~str,str~ keys  entity -> key attribute
+        +str on_user_delete  disable|delete
+        +str user_status_field
+        +List~str~ user_disabled_values
+    }
+    SyncConfig *-- "1..*" EntityConfig
+    SyncConfig *-- Target
+    SyncConfig *-- "0..1" ExportConfig
+    SyncConfig *-- AdMapping
+    SyncConfig *-- "0..1" AuditConfig
+    AuditConfig *-- AuditFields
+    ExportConfig *-- DomainSplit
+
+    %% ---- producer.yaml (producer site) ----
+    class ProducerConfig {
+        <<producer.yaml>>
+        +str employee_id_field
+        +str user_search_path
+        +Map~Kind,DirectoryConfig~ directories
+        +LifecycleActions lifecycle_actions
+        +bool terminate_removes_access
+        +Map~str,Map~str,StatusRule~~ status_rules
+    }
+    class DirectoryConfig {
+        +str search_path
+        +str name_field
+        +str id_field
+        +Map~str,str~ aliases  producer name -> AD name
+        +Map~str,any~ search_extra
+        +Map~str,any~ require  e.g. managedSysId
+        +str create_path  optional
+        +Map create_body
+    }
+    class StatusRule {
+        +bool hold  disables until cleared
+        +List~str~ groups
+        +List~str~ roles
+        +List~str~ organizations
+    }
+    class LifecycleActions {
+        +str terminate
+        +str leave
+        +str return
+    }
+    ProducerConfig *-- "3" DirectoryConfig : group, role, organization
+    ProducerConfig *-- "*" StatusRule
+    ProducerConfig *-- LifecycleActions
+    ProducerConfig ..> AdMapping : uses sync.yaml ad
+
+    %% ---- consumer.yaml (remote site) ----
+    class ConsumerConfig {
+        <<consumer.yaml>>
+        +str inbox
+        +str archive
+        +str failed
+        +int interval_seconds
+        +List~str~ domains
+        +bool watch_inbox  watchdog
+        +bool watch_polling  SMB / NFS
+        +float settle_seconds
+        +List~str~ trusted_signing_keys
+        +bool require_signature
+        +str age_identity_file
+        +bool require_encryption
+        +bool apply_instructions
+        +Map~str,str~ instruction_user_keys
+        +UserEntity user
+        +Map~Kind,DirectoryEntity~ directories
+        +AdConfig ad  CONSUMER_TARGET=ad
+    }
+    class AdConfig {
+        +List~str~ servers  ldaps://
+        +str bind_dn
+        +str bind_password_env
+        +str ca_cert_file
+        +bool start_tls
+        +str base_dn
+        +str users_ou
+        +str groups_ou
+        +str ous_base
+        +str mode  dry_run|approve|auto
+        +int max_changes_auto
+        +bool allow_delete
+        +List~str~ protected_groups
+        +AdWatchConfig watch
+    }
+    class AdWatchConfig {
+        +bool enabled
+        +int interval_minutes
+        +List~str~ attributes
+        +bool protected_groups
+    }
+    class UserEntity {
+        +str search_path
+        +str match_field  same person in both OpenIAMs
+        +Map~str,str~ fields  source -> remote field
+        +str email_field
+        +Map~Kind,str~ memberships  dotted paths
+        +str on_missing  disable|ignore
+    }
+    class DirectoryEntity {
+        +str search_path
+        +str name_field
+        +str id_field
+        +str create_path  optional
+        +Map create_body
+    }
+    ConsumerConfig *-- UserEntity
+    ConsumerConfig *-- "0..1" AdConfig
+    AdConfig *-- AdWatchConfig
+    ConsumerConfig *-- "3" DirectoryEntity
+
+    Settings ..> SyncConfig : sync_config_path
+    Settings ..> ProducerConfig : producer_config_path
+    Settings ..> ConsumerConfig : consumer_config_path

@@ -1,0 +1,234 @@
+---
+title: backend-iam - database ER diagram (backend_iam schema, never OpenIAM's tables; Alembic 0001-0004)
+---
+erDiagram
+    %% ===== change detection + outbox (producer site) =====
+    sync_entity_state {
+        varchar entity_type PK "user | group | role | organization"
+        varchar entity_id PK "OpenIAM id"
+        char64 hash "sha256 of normalized record"
+        jsonb data "last-seen record"
+        float updated_at
+    }
+    sync_runs {
+        bigint id PK
+        float started_at
+        float finished_at
+        varchar status "running | ok | baseline | failed"
+        jsonb summary "per-entity counts"
+        text error
+    }
+    sync_outbox {
+        bigint seq PK "delivery order"
+        varchar event_id UK "dedupe key"
+        jsonb payload "ChangeEvent + instructions"
+        float created_at
+        int attempts
+        float next_attempt "backoff"
+        float delivered_at "null = pending"
+        bool dead
+        text last_error
+    }
+    sync_exports {
+        varchar domain PK
+        char64 content_hash "skip unchanged domains"
+        text file "last zip path"
+        int records
+        float exported_at
+    }
+
+    sync_runs ||--o{ sync_outbox : "payload.run_id"
+    sync_entity_state }o--o{ sync_exports : "split by domain field"
+
+    %% ===== producer intake (producer site) =====
+    producer_people {
+        varchar employee_id PK
+        varchar user_id "OpenIAM id"
+        varchar employment_target "desired: active | leave | terminated"
+        varchar employment "applied"
+        bool enabled "applied"
+        jsonb assignments "desired: kind to names"
+        jsonb statuses "desired: status to value"
+        float updated_at
+    }
+    producer_memberships {
+        varchar employee_id PK, FK
+        varchar kind PK "group | role | organization"
+        varchar object_id PK "granted by this backend"
+    }
+    producer_directory {
+        varchar kind PK
+        varchar name PK "OpenIAM name after alias"
+        varchar object_id "OpenIAM id"
+    }
+    producer_processed {
+        varchar event_id PK "idempotency"
+        jsonb result "ProducerResult"
+        float at
+    }
+    producer_activity {
+        bigint id PK
+        float at
+        varchar employee_id FK
+        varchar event_type
+        varchar event_id
+        bool ok
+        bool duplicate
+        varchar user_id
+        text error
+        jsonb result "actions + instructions"
+    }
+
+    producer_people ||--o{ producer_memberships : "has"
+    producer_directory ||--o{ producer_memberships : "object_id"
+    producer_people ||--o{ producer_activity : "events"
+    producer_processed |o--o| producer_activity : "event_id"
+    producer_activity ||--o| sync_outbox : "queues instructions"
+
+    %% ===== consumer (remote site) =====
+    consumer_files {
+        char64 sha256 PK "dedupe"
+        varchar name
+        varchar domain
+        varchar generated_at "from manifest"
+        varchar status "processing | applied | partial | failed | stale | skipped"
+        float received_at
+        float processed_at
+        jsonb counts
+        jsonb summary
+        text error
+        text stored_at "archive / failed path"
+    }
+    consumer_domains {
+        varchar domain PK
+        varchar last_generated_at "rejects older zips"
+        char64 last_file FK
+        int records
+        float updated_at
+    }
+    consumer_records {
+        varchar domain PK, FK
+        varchar entity PK
+        varchar source_id PK "producer-side OpenIAM id"
+        char64 hash "skip unchanged"
+        varchar remote_id "remote OpenIAM id"
+        jsonb granted "memberships this consumer added"
+        float updated_at
+    }
+    consumer_actions {
+        bigint id PK
+        float at
+        char64 file_sha256 FK
+        varchar domain
+        varchar entity
+        varchar source_id
+        varchar action "created | updated | exists | disabled | missing | failed | reject"
+        bool ok
+        text detail
+    }
+
+    consumer_files ||--o{ consumer_actions : "caused"
+    consumer_domains ||--o{ consumer_records : "holds"
+    consumer_domains }o--|| consumer_files : "last_file"
+
+    %% ===== security + operations (migration 0002) =====
+    api_keys {
+        bigint id PK
+        varchar name UK
+        varchar key_prefix "shown in lists"
+        char64 key_hash UK "sha256: the key itself is never stored"
+        jsonb scopes
+        jsonb allowed_cidrs
+        float created_at
+        varchar created_by
+        float last_used_at
+        float expires_at
+        float revoked_at
+    }
+    web_users {
+        varchar username PK
+        text password_hash "scrypt"
+        varchar role "viewer | operator | admin"
+        bool disabled
+        int failed_logins
+        float locked_until
+        int session_epoch "bump = log out everywhere"
+        float created_at
+        float last_login_at
+        float password_changed_at
+    }
+    audit_trail {
+        bigint id PK
+        float at
+        varchar channel "web | api | cli | system"
+        varchar actor "e.g. api:hr-system, producer:alice"
+        varchar ip
+        varchar action
+        text target
+        bool ok
+        text detail
+    }
+    operator_requests {
+        bigint id PK
+        float at
+        varchar requested_by
+        varchar service "producer | consumer"
+        varchar action "sync_run | export | scan | reprocess | drift | ad_approve | ad_watch"
+        jsonb params
+        varchar status "pending | running | done | failed"
+        float started_at
+        float finished_at
+        jsonb result
+    }
+    drift_reports {
+        bigint id PK
+        float at
+        varchar domain
+        varchar status "clean | drift"
+        jsonb summary
+        jsonb items
+        varchar requested_by
+    }
+    web_users ||--o{ audit_trail : "actor"
+    api_keys ||--o{ audit_trail : "actor"
+    web_users ||--o{ operator_requests : "requested_by"
+    consumer_domains ||--o{ drift_reports : "domain"
+
+    %% ===== AD target (migrations 0003, 0004) =====
+    ad_plans {
+        bigint id PK
+        float at
+        char64 file_sha256 FK
+        varchar domain
+        varchar mode "dry_run | approve | auto"
+        varchar status "planned | awaiting_approval | applied | partial | rejected"
+        jsonb lines "the zip's instruction lines"
+        jsonb items "LDAP changes: add | modify | delete | noop | error"
+        jsonb summary
+        varchar decided_by
+        float decided_at
+        float applied_at
+    }
+    ad_watch_state {
+        varchar dn PK
+        varchar object_class
+        jsonb attrs "watched attributes, last seen"
+        char64 hash
+        float updated_at
+        varchar updated_by "consumer | poll"
+    }
+    ad_change_alerts {
+        bigint id PK
+        float at
+        varchar dn
+        varchar object_class
+        varchar kind "modified | appeared | disappeared"
+        varchar severity "info | warning | critical"
+        jsonb changes "old -> new, member added / removed"
+        varchar acknowledged_by
+        float acknowledged_at
+        text note
+    }
+    consumer_files ||--o| ad_plans : "file_sha256"
+    ad_plans ||--o{ consumer_actions : "planned / applied changes"
+    ad_watch_state ||--o{ ad_change_alerts : "dn"

@@ -1,0 +1,131 @@
+---
+# Which service this role instance installs:
+#   producer   API + producer intake + change detection + export        (producer site)
+#   web        producer-site web UI                                     (producer site)
+#   consumer   applies zips to the remote OpenIAM or to AD              (consumer site)
+#   oversight  consumer-site web UI                                     (consumer site)
+#   proxy      HTTPS reverse proxy (nginx) in front of the above        (both sites)
+# Set per play in site.yml; a host in several groups gets several services.
+backend_iam_service: ""
+
+# ---- image ------------------------------------------------------------------
+backend_iam_version: "0.1.0"
+# build: build on the control node from backend_iam_source_dir, ship with docker save/load
+#        (no registry needed). registry: docker pull backend_iam_image on each host.
+backend_iam_image_source: build
+backend_iam_image: "backend-iam:{{ backend_iam_version }}"
+backend_iam_source_dir: "{{ playbook_dir }}/../.."
+# Docker CLI used for the build on the control node, and whether the build needs root
+# (e.g. on WSL, where `docker` may resolve to Docker Desktop's CLI).
+backend_iam_build_docker: docker
+backend_iam_build_become: false
+
+# ---- offline (no internet) --------------------------------------------------
+# offline-bundle/ from deploy/offline/download.sh, on the control node. When set, the
+# base image and the proxy image are loaded from it (the wheels must be in vendor/wheels).
+backend_iam_offline_bundle: ""
+backend_iam_base_image: python:3.14.7-slim-trixie
+# Folder of Docker .deb files (offline-bundle/debs/<distro>) to install Docker on hosts
+# without apt access. Empty: use apt (internet or an internal mirror).
+backend_iam_docker_debs_dir: ""
+backend_iam_apt_update: true
+
+# ---- docker -----------------------------------------------------------------
+# Install Docker from the distribution packages (Debian/Ubuntu: docker.io).
+# Set false if Docker is already installed or managed elsewhere.
+backend_iam_install_docker: true
+# The Docker CLI the units call, and the systemd unit of the engine they depend on.
+# Docker Desktop (WSL integration) has no docker.service: set backend_iam_docker_unit: ""
+# and backend_iam_install_docker: false; the services then only run while Desktop runs.
+backend_iam_docker_bin: /usr/bin/docker
+backend_iam_docker_unit: docker.service
+
+# ---- host layout ------------------------------------------------------------
+backend_iam_etc: /etc/backend-iam
+backend_iam_var: /var/lib/backend-iam
+backend_iam_uid: 10001          # user inside the image
+backend_iam_unit_prefix: backend-iam
+
+# Per-service config folders on the control node, copied to /etc/backend-iam/<service>/
+# and mounted read-only at /config:
+#   <dir>/producer/   sync.yaml, producer.yaml, export-signing.key
+#   <dir>/consumer/   consumer.yaml, export-signing.pub, site.age, ad-ca.pem
+#   <dir>/proxy/tls/  cert.pem, key.pem (+ client-ca.pem for mutual TLS on the API)
+backend_iam_config_src: "{{ inventory_dir }}/files/{{ inventory_hostname }}"
+
+# ---- published ports (localhost only; the proxy is the way in) -------------------
+backend_iam_producer_bind: "127.0.0.1:8000"
+backend_iam_web_bind: "127.0.0.1:8090"
+backend_iam_oversight_bind: "127.0.0.1:8091"
+backend_iam_consumer_metrics_bind: "127.0.0.1:9102"
+
+# ---- proxy ------------------------------------------------------------------
+# Offline: loaded from offline-bundle/images/backend-iam-proxy-1.27.tar (download.sh).
+# Online: pulled from backend_iam_proxy_upstream_image and tagged with this name.
+backend_iam_proxy_image: backend-iam-proxy:1.27
+backend_iam_proxy_upstream_image: nginx:1.27-alpine
+# What the proxy serves on this host. client_ca: require client certificates (mutual
+# TLS), e.g. for the HR system calling the API.
+backend_iam_proxy_sites:
+  - {name: web, listen: 443, upstream: "{{ backend_iam_web_bind }}"}
+  - {name: api, listen: 8443, upstream: "{{ backend_iam_producer_bind }}", client_ca: false}
+# Without files in <config_src>/proxy/tls/, create a self-signed certificate (lab only).
+backend_iam_proxy_self_signed: false
+# The app containers see the proxy's connections coming from the Docker bridge gateway.
+backend_iam_trusted_proxies: "172.16.0.0/12"
+
+# ---- per service ------------------------------------------------------------
+backend_iam_services:
+  producer:
+    command: "serve --host 0.0.0.0 --port 8000"
+    ports: ["{{ backend_iam_producer_bind }}:8000"]
+    health_url: "http://{{ backend_iam_producer_bind }}/health"
+    env:
+      SYNC_SCHEDULE: "true"
+      TRUSTED_PROXIES: "{{ backend_iam_trusted_proxies }}"
+  web:
+    command: "web --host 0.0.0.0 --port 8090"
+    ports: ["{{ backend_iam_web_bind }}:8090"]
+    health_url: "http://{{ backend_iam_web_bind }}/healthz"
+    env:
+      TRUSTED_PROXIES: "{{ backend_iam_trusted_proxies }}"
+  consumer:
+    command: "consumer watch"
+    ports: ["{{ backend_iam_consumer_metrics_bind }}:9102"]
+    health_url: "http://{{ backend_iam_consumer_metrics_bind }}/metrics"
+    env:
+      CONSUMER_METRICS_HOST: "0.0.0.0"
+  oversight:
+    command: "oversight --host 0.0.0.0 --port 8091"
+    ports: ["{{ backend_iam_oversight_bind }}:8091"]
+    health_url: "http://{{ backend_iam_oversight_bind }}/healthz"
+    # Reads the consumer's config (target, AD mode) from the same host.
+    config_from: consumer
+    env:
+      TRUSTED_PROXIES: "{{ backend_iam_trusted_proxies }}"
+  proxy:
+    app: false
+    image: "{{ backend_iam_proxy_image }}"
+    command: ""
+    network_host: true
+    caps_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
+    tmpfs: [/var/cache/nginx, /var/run]
+    static_mounts:
+      - "{{ backend_iam_etc }}/proxy/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - "{{ backend_iam_etc }}/proxy/tls:/etc/nginx/tls:ro"
+    ports: []
+    health_url: "https://127.0.0.1:{{ backend_iam_proxy_sites[0].listen }}/healthz"
+    env: {}
+
+# Extra host folders mounted into the container: {host_path: container_path}.
+# backend_iam_mounts applies to every service on the host; *_by_service to one.
+# producer: the export folder, e.g. a mounted share -> /data/exports (export.folder)
+# consumer: the inbox the zips arrive in            -> /data/inbox   (inbox)
+backend_iam_mounts: {}
+backend_iam_mounts_by_service: {}
+
+# ---- environment (rendered to /etc/backend-iam/<service>.env, mode 0600) -----
+# Common to every service on the host. Put secrets in vault (see group_vars).
+backend_iam_env: {}
+# Per service, merged over backend_iam_env.
+backend_iam_env_by_service: {}

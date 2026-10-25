@@ -1,0 +1,58 @@
+# Producer intake: copy to producer.yaml and adjust.
+#
+# A producer (HR or any other source system) sends hire / update / terminate / leave /
+# return / status events to POST /producer/events. This backend applies them to OpenIAM:
+# user record, account state, and group / role / organization membership.
+#
+# Search and create paths are NOT confirmed by OpenIAM's published docs; check them
+# against `iam api-docs` and try each with `iam raw` first.
+
+# OpenIAM user field that stores the producer's employee id.
+employee_id_field: employeeId
+user_search_path: /webconsole/rest/api/users/search
+
+directories:
+  group:
+    search_path: /webconsole/rest/api/groups/search
+    name_field: name
+    id_field: id
+    # Producer name -> OpenIAM (AD) group name. Unlisted names are used as-is.
+    aliases:
+      Finance: GRP-Finance-RW
+      Engineering: GRP-Eng-Users
+    # Only accept groups linked to the AD managed system, so a same-named non-AD group
+    # is never used. Find the field name and id in a real group search result.
+    require:
+      managedSysId: "<AD managed system id>"
+    # To create missing groups (as AD groups), set the create endpoint from api-docs:
+    # create_path: /webconsole/rest/api/groups/<save endpoint>
+    # create_body: { name: "{name}", managedSysId: "<AD managed system id>" }
+
+  role:
+    search_path: /webconsole/rest/api/roles/search
+    aliases: {}
+
+  organization:
+    search_path: /webconsole/rest/api/organizations/search
+    aliases: {}
+
+# OpenIAM lifecycle action used for each event (see USER_ACTIONS in the client).
+lifecycle_actions:
+  terminate: terminate
+  leave: leave-of-absence
+  return: enable
+
+# On termination, remove every group / role / organization this backend granted.
+terminate_removes_access: true
+
+# What each status value means. hold: true disables the account until every hold clears.
+# groups / roles / organizations are granted while the status has that value.
+status_rules:
+  compliance:
+    non_compliant: { hold: true }
+    compliant: {}
+  training:
+    overdue: { hold: true }
+    complete:
+      groups: [VPN Users]
+      roles: [Remote Worker]

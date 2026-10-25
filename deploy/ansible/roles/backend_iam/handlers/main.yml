@@ -1,0 +1,12 @@
+---
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart backend-iam service
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ backend_iam_unit_prefix }}-{{ backend_iam_service }}"
+    state: restarted
+    daemon_reload: true

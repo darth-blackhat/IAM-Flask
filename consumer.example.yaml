@@ -1,0 +1,96 @@
+# Consumer (remote site): copy to consumer.yaml.
+#
+# Picks up the per-domain zips the producer side exports (a watchdog reacts as soon as one
+# arrives), verifies signature / encryption / checksums, and applies them to this site's
+# target, chosen by the environment:
+#   CONSUMER_TARGET=openiam   this site has OpenIAM: records + instructions -> OpenIAM REST
+#   CONSUMER_TARGET=ad        no OpenIAM here: the zip's AD instructions -> Active Directory
+#
+#   iam consumer watch    # the service (systemd unit backend-iam-consumer)
+#   iam consumer scan     # once, by hand
+#   iam oversight         # consumer-site web UI
+#
+# Search/create paths are NOT confirmed by OpenIAM's docs; check them against the
+# remote's `iam api-docs` and test each with `iam raw` first.
+
+# Where the producer side's zips arrive (its export.folder, or a copy/sync of it).
+inbox: /data/inbox
+# Processed zips move here, per domain. Keep these outside the inbox.
+archive: /data/archive
+failed: /data/failed
+# Fallback timed scan; new zips are normally picked up within seconds by the watchdog.
+interval_seconds: 60
+watch_inbox: true
+# The inbox is an SMB / NFS share written by another machine? Its writes are not
+# reported as events there: poll instead.
+watch_polling: false
+# Take a file only after it stopped changing for this long (copies in progress).
+settle_seconds: 3
+
+# ---- security of the zips (recommended: require both) ----
+# Public signing key(s) of the producer site (`iam keys signing ...` -> .pub).
+trusted_signing_keys: []          # [/config/export-signing.pub]
+require_signature: false
+# This site's age identity (`iam keys age /config/site-b.age`); its recipient goes into
+# the producer's export.encrypt_to.
+age_identity_file: null           # /config/site-b.age
+require_encryption: false
+
+# Accept only these domains (empty: all).
+domains: []
+
+user:
+  search_path: /webconsole/rest/api/users/search
+  # Same person in both OpenIAMs (OpenIAM ids differ between the two).
+  match_field: employeeId
+  # Field in the zip's user records -> remote EditUserModel field.
+  fields:
+    firstName: firstName
+    lastName: lastName
+    employeeId: employeeId
+    title: title
+  email_field: email
+  # Memberships by name, read from the user record (dotted path). Only memberships this
+  # consumer granted are ever removed. Leave empty if the records carry none.
+  memberships: {}
+  #   group: groups.name
+  #   role: roles.name
+  #   organization: organizations.name
+  # A user missing from a newer zip of the same domain (and from every other domain).
+  on_missing: disable
+
+# OpenIAM target: also carry out the zip's AD instructions that records cannot express
+# (enable / disable, add / remove member, delete -> disable), in instruction order.
+apply_instructions: true
+instruction_user_keys: { employeeID: employeeId }   # AD key attribute -> OpenIAM user field
+
+directories:
+  group:
+    search_path: /webconsole/rest/api/groups/search
+    name_field: name
+    # create_path: /webconsole/rest/api/groups/<save endpoint from the remote api-docs>
+    # create_body: { name: "{name}" }
+  organization:
+    search_path: /webconsole/rest/api/organizations/search
+  role:
+    search_path: /webconsole/rest/api/roles/search
+
+# ---- AD target (only with CONSUMER_TARGET=ad: a site without OpenIAM) ----
+# ad:
+#   servers: [ldaps://dc1.corp.example:636, ldaps://dc2.corp.example:636]
+#   bind_dn: CN=svc-backend-iam,OU=Service Accounts,DC=corp,DC=example
+#   bind_password_env: AD_BIND_PASSWORD        # the password itself comes from the env
+#   ca_cert_file: /config/ad-ca.pem            # validates the DCs' certificates
+#   base_dn: DC=corp,DC=example                # nothing outside it is ever touched
+#   users_ou: OU=Users,OU=IAM,DC=corp,DC=example
+#   groups_ou: OU=Groups,OU=IAM,DC=corp,DC=example
+#   ous_base: OU=IAM,DC=corp,DC=example
+#   upn_suffix: corp.example
+#   mode: approve            # dry_run | approve (operator approves each plan in the UI) | auto
+#   max_changes_auto: 100    # auto mode: bigger plans still wait for approval
+#   allow_delete: false      # deletes become disable (users) / are skipped
+#   # protected_groups: [...] Domain Admins, Enterprise Admins, ... are never changed
+#   watch:                   # alert on AD changes made without the consumer
+#     enabled: true
+#     interval_minutes: 10
+#     protected_groups: true # watch their membership anywhere under base_dn (critical)

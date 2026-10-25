@@ -1,0 +1,68 @@
+# {{ ansible_managed }}
+# backend-iam {{ backend_iam_service }}: runs the container; systemd restarts it on failure and at boot.
+#   journalctl -u {{ _unit }} -f
+[Unit]
+Description=backend-iam {{ backend_iam_service }}
+Documentation=file://{{ backend_iam_etc }}
+{% if backend_iam_docker_unit %}
+Requires={{ backend_iam_docker_unit }}
+After={{ backend_iam_docker_unit }} network-online.target
+{% else %}
+After=network-online.target
+{% endif %}
+Wants=network-online.target
+{% if backend_iam_docker_unit %}
+StartLimitIntervalSec=300
+StartLimitBurst=10
+{% else %}
+# Engine without a systemd unit (Docker Desktop): keep retrying until it is up.
+StartLimitIntervalSec=0
+{% endif %}
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+{% if backend_iam_docker_unit %}
+TimeoutStartSec=120
+{% else %}
+TimeoutStartSec=infinity
+ExecStartPre=/bin/sh -c 'until {{ backend_iam_docker_bin }} info >/dev/null 2>&1; do sleep 5; done'
+{% endif %}
+# Remove a container left over from an unclean stop (quietly: usually there is none).
+ExecStartPre=-/bin/sh -c '{{ backend_iam_docker_bin }} rm -f {{ _unit }} >/dev/null 2>&1'
+ExecStart={{ backend_iam_docker_bin }} run --rm --name {{ _unit }} \
+  --log-driver journald --log-opt tag={{ _unit }} \
+  --env-file {{ backend_iam_etc }}/{{ backend_iam_service }}.env \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+{% for t in _svc.tmpfs | default([]) %}
+  --tmpfs {{ t }}:rw,noexec,nosuid,size=16m \
+{% endfor %}
+  --cap-drop ALL{% for c in _svc.caps_add | default([]) %} --cap-add {{ c }}{% endfor %} \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 \
+{% if _svc.network_host | default(false) %}
+  --network host \
+{% else %}
+  --add-host host.docker.internal:host-gateway \
+{% endif %}
+{% if _svc.app | default(true) %}
+  -v {{ backend_iam_etc }}/{{ _svc.config_from | default(backend_iam_service) }}:/config:ro \
+  -v {{ backend_iam_var }}/{{ backend_iam_service }}:/data \
+{% endif %}
+{% for m in _svc.static_mounts | default([]) %}
+  -v {{ m }} \
+{% endfor %}
+{% for host_path, ctr_path in _mounts.items() %}
+  -v {{ host_path }}:{{ ctr_path }} \
+{% endfor %}
+{% for port in _svc.ports %}
+  -p {{ port }} \
+{% endfor %}
+  {{ _svc.image | default(backend_iam_image) }}{% if _svc.command %} {{ _svc.command }}{% endif %}
+
+ExecStop={{ backend_iam_docker_bin }} stop -t 30 {{ _unit }}
+
+[Install]
+WantedBy=multi-user.target

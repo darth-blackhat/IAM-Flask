@@ -1,0 +1,3 @@
+# Deployed on Linux: keep LF line endings (shell scripts, systemd/nginx templates).
+* text=auto eol=lf
+*.svg binary

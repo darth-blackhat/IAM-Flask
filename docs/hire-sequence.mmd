@@ -1,0 +1,41 @@
+---
+title: One hire, end to end (no AD connection)
+---
+sequenceDiagram
+    autonumber
+    participant HR as HR (source of truth)
+    participant P as producer service
+    participant DB as PostgreSQL (backend)
+    participant OA as OpenIAM A
+    participant T as Transport (webhook / zip)
+    participant RX as Other site (receiver)
+    participant C as consumer service
+    participant OB as OpenIAM B
+
+    HR->>P: POST /producer/events {type: hire, employee_id: E1001, groups: [Finance], ...}
+    P->>DB: lock "producer", seen event_id?
+    alt resent message
+        DB-->>P: stored result
+        P-->>HR: 200 {duplicate: true}
+    else new message
+        P->>OA: search user employeeId=E1001
+        OA-->>P: not found
+        P->>OA: POST /prov/saveUser
+        OA-->>P: status 200, contextValues.userId
+        P->>OA: groups/search name=GRP-Finance-RW (alias), require managedSysId
+        P->>OA: POST /prov/entitle ADD groupIds
+        P->>DB: person state, memberships, activity log
+        P->>DB: outbox: [create user E1001, add_member cn=GRP-Finance-RW]
+        P-->>HR: 200 {ok: true, actions, instructions}
+    end
+    P->>T: deliver outbox in order (signed)
+    T->>RX: instructions
+    RX-->>T: 2xx = delivered (else retried with backoff)
+
+    Note over P,OA: minutes later: change detection pulls OpenIAM A,<br/>sees the new user, emits an idempotent "create" (harmless repeat)
+
+    P->>T: export: openiam-corp.example-...zip (changed domain only)
+    T->>C: zip in inbox
+    C->>C: verify sha256, reject stale / duplicate
+    C->>OB: match employeeId=E1001, saveUser, groups
+    C->>C: archive zip, log actions (visible in web)

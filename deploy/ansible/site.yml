@@ -1,0 +1,41 @@
+---
+# Deploy backend-iam as separate Linux (systemd) services, each running its Docker
+# container. Hosts get the services of the groups they are in:
+#   producer   API + producer intake + change detection + per-domain export
+#   web        producer-site web UI
+#   consumer   applies the producer side's zips to the remote OpenIAM or to AD
+#   oversight  consumer-site web UI
+#   proxy      HTTPS reverse proxy in front of the services on that host
+#
+#   ansible-playbook -i inventories/prod/hosts.ini site.yml --ask-vault-pass -K
+#   ansible-playbook -i ... site.yml --limit consumer        # one group only
+
+- name: Producer service
+  hosts: producer
+  roles:
+    - role: backend_iam
+      backend_iam_service: producer
+
+- name: Producer-site web UI
+  hosts: web
+  roles:
+    - role: backend_iam
+      backend_iam_service: web
+
+- name: Consumer service
+  hosts: consumer
+  roles:
+    - role: backend_iam
+      backend_iam_service: consumer
+
+- name: Consumer-site web UI (oversight)
+  hosts: oversight
+  roles:
+    - role: backend_iam
+      backend_iam_service: oversight
+
+- name: HTTPS proxy
+  hosts: proxy
+  roles:
+    - role: backend_iam
+      backend_iam_service: proxy

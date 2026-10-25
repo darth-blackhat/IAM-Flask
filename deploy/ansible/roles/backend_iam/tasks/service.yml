@@ -1,0 +1,108 @@
+---
+- name: Service facts
+  ansible.builtin.set_fact:
+    _svc: "{{ backend_iam_services[backend_iam_service] }}"
+    _unit: "{{ backend_iam_unit_prefix }}-{{ backend_iam_service }}"
+    _is_app: "{{ backend_iam_services[backend_iam_service].app | default(true) }}"
+    _mounts: "{{ backend_iam_mounts | combine(backend_iam_mounts_by_service.get(backend_iam_service, {})) }}"
+    _env: >-
+      {{ backend_iam_env
+         | combine(backend_iam_services[backend_iam_service].env)
+         | combine(backend_iam_env_by_service.get(backend_iam_service, {})) }}
+
+- name: Config directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ backend_iam_etc }}/{{ backend_iam_service }}"
+    state: directory
+    owner: root
+    group: "{{ backend_iam_uid }}"
+    mode: "0750"
+
+- name: State directory (writable by the container user)
+  when: _is_app | bool
+  become: true
+  ansible.builtin.file:
+    path: "{{ backend_iam_var }}/{{ backend_iam_service }}"
+    state: directory
+    owner: "{{ backend_iam_uid }}"
+    group: "{{ backend_iam_uid }}"
+    mode: "0750"
+
+- name: Extra mount points exist
+  become: true
+  loop: "{{ _mounts | dict2items }}"
+  ansible.builtin.file:
+    path: "{{ item.key }}"
+    state: directory
+    owner: "{{ backend_iam_uid }}"
+    group: "{{ backend_iam_uid }}"
+    mode: "0750"
+
+- name: Config files for this service (YAML, keys, certificates) present?
+  when: _is_app | bool
+  delegate_to: localhost
+  become: false
+  ansible.builtin.stat:
+    path: "{{ backend_iam_config_src }}/{{ backend_iam_service }}"
+  register: _cfg_src
+
+- name: Config files (readable by the container user, not by others)
+  when: _is_app | bool and _cfg_src.stat.exists
+  become: true
+  ansible.builtin.copy:
+    src: "{{ backend_iam_config_src }}/{{ backend_iam_service }}/"
+    dest: "{{ backend_iam_etc }}/{{ backend_iam_service }}/"
+    owner: root
+    group: "{{ backend_iam_uid }}"
+    mode: "0640"
+    directory_mode: "0750"
+  notify: Restart backend-iam service
+
+- name: Proxy configuration
+  when: backend_iam_service == "proxy"
+  ansible.builtin.import_tasks: proxy.yml
+
+- name: Environment file (secrets; root only)
+  become: true
+  ansible.builtin.template:
+    src: service.env.j2
+    dest: "{{ backend_iam_etc }}/{{ backend_iam_service }}.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart backend-iam service
+
+- name: Systemd unit
+  become: true
+  ansible.builtin.template:
+    src: backend-iam.service.j2
+    dest: "/etc/systemd/system/{{ _unit }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart backend-iam service
+
+- name: Apply pending restarts before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Service enabled and running
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ _unit }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Health check
+  ansible.builtin.uri:
+    url: "{{ _svc.health_url }}"
+    status_code: 200
+    validate_certs: "{{ backend_iam_service != 'proxy' }}"
+  register: _health
+  retries: 20
+  delay: 3
+  until: _health.status == 200

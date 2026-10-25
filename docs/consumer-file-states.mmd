@@ -1,0 +1,40 @@
+---
+title: Consumer - what happens to each zip in the inbox
+---
+stateDiagram-v2
+    direction LR
+    [*] --> Arrived : watchdog event or timed scan<br/>(.partial files ignored)
+    Arrived --> Arrived : still changing<br/>(settle_seconds)
+    Arrived --> Duplicate : same sha256 seen before
+    Arrived --> Verifying
+
+    Verifying --> Failed : cannot decrypt, unsigned or untrusted signature,<br/>checksum or count mismatch, plaintext when encryption required
+    Verifying --> Skipped : domain not accepted
+    Verifying --> Stale : older than the zip already<br/>applied for this domain
+    Verifying --> Processing
+
+    state Processing {
+        direction LR
+        [*] --> OpenIAM : CONSUMER_TARGET=openiam
+        [*] --> Plan : CONSUMER_TARGET=ad
+        OpenIAM --> [*] : records upserted,<br/>then instructions
+        Plan --> [*]
+    }
+
+    Processing --> Applied : every record / change done
+    Processing --> Partial : some failed (retried with the next zip,<br/>or "apply again" in oversight)
+    Processing --> Planned : AD mode dry_run
+    Processing --> AwaitingApproval : AD mode approve,<br/>or auto above max_changes_auto
+    Processing --> Retry : AD unreachable<br/>(file stays in the inbox)
+    AwaitingApproval --> Applied : operator approves<br/>(re-planned against AD first)
+    AwaitingApproval --> Rejected : operator rejects
+
+    Failed --> [*] : moved to failed/
+    Duplicate --> [*] : archive/DOMAIN/
+    Skipped --> [*] : archive/DOMAIN/
+    Stale --> [*] : archive/DOMAIN/
+    Applied --> [*] : archive/DOMAIN/
+    Partial --> [*] : archive/DOMAIN/
+    Planned --> [*] : archive/DOMAIN/
+    Rejected --> [*] : archive/DOMAIN/
+    Retry --> Arrived : next scan
