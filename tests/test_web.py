@@ -197,3 +197,24 @@ def test_the_two_uis_use_different_cookies(make_web):
     login(o)
     assert {c.key for c in p._cookies.values()} == {"biam_producer"}
     assert {c.key for c in o._cookies.values()} == {"biam_consumer"}
+
+
+def test_stale_login_page_gets_a_fresh_form_not_an_error(make_web):
+    c = make_web()
+    # A login form from before a restart: its token matches no session.
+    r = c.post("/login", data={"username": "boss", "password": ADMIN_PW, "csrf_token": "stale"})
+    assert r.status_code == 302 and r.headers["Location"].endswith("/login")
+    page = c.get("/login").get_data(as_text=True)
+    assert "had expired" in page
+    assert c.get("/").status_code == 302                     # the stale post did not sign in
+    assert login(c).status_code == 302 and c.get("/").status_code == 200
+
+
+def test_background_requests_do_not_break_the_open_login_form(make_web):
+    c = make_web()
+    token = csrf(c)
+    assert c.get("/favicon.ico").status_code == 204
+    assert c.get("/some/protected/page").status_code == 302   # anonymous: sent to login
+    r = c.post("/login", data={"username": "boss", "password": ADMIN_PW, "next": "/", "csrf_token": token})
+    assert r.status_code == 302 and r.headers["Location"] == "/"
+    assert c.get("/").status_code == 200

@@ -38,3 +38,6 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+"app.web" = ["static/*.js", "static/*.css", "static/vendor/*"]

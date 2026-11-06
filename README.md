@@ -94,6 +94,29 @@ Other delivery targets remain available: `webhook` (HMAC-signed), `file`, or `no
 other side pulls `GET /sync/events`). Configure delivery in
 [sync.example.yaml](sync.example.yaml).
 
+## Directory, governance and approvals (producer web UI)
+
+Everything below runs in `iam web` and is applied by `iam serve`; the web UI holds no
+OpenIAM, AD, Jira, SMTP or webhook credentials. The producer side never connects to AD:
+AD changes travel as instructions in the per-domain zips and the consumer site applies them.
+
+| Area | What it does |
+|---|---|
+| **Directory** | Create, edit, delete users, groups, organizations (OUs, with a type: office, branch, division, department, ...) and roles; members and nested groups (memberOf). Each change is written via **OpenIAM + AD** or as **AD instructions only**, chosen per action. **Preview** shows the exact OpenIAM steps and AD instructions first. |
+| **Every change** | Needs a **Jira ticket** and a **justification**, and waits in the database for **approval by someone else**. Deletes and large batches need **two approvers** (`APPROVALS_FOR_DESTRUCTIVE`). Admins can be limited to approving some domains / OUs. |
+| **Bulk import** | CSV of users, groups, roles, organizations or memberships: every row is checked and previewed, then saved as one request. |
+| **Mover** | Department / branch change: pick access to remove, add the new, save as one request. |
+| **Time-limited access** | A membership can end on a date; the removal then runs automatically (approved with the grant). |
+| **Self-service** | Anyone signed in can request a group or role (viewers only for their own linked employee id). |
+| **Segregation of duties** | Policies of two entitlements nobody may hold together; toxic combinations are refused when requested and again at approval (rows of a batch are checked together); current violations are listed. |
+| **Access certifications** | Campaigns where reviewers certify or revoke each entitlement; a revocation is a normal request. |
+| **Insights** | Role mining (combinations many people share), peer outliers, orphan and dormant accounts, organization tree, dashboard trends. |
+| **Reports** | CSV downloads (spreadsheet formulas neutralised) and daily / weekly schedules written to `REPORTS_FOLDER`. |
+| **Jira** | `JIRA_CHECK=enforce` runs a change only if its ticket is in an allowed status; `JIRA_COMMENT=true` comments the outcome. |
+| **Alerts** | Email and webhook templates (Teams, Slack, ServiceNow, ...) from [notify.example.yaml](notify.example.yaml): https only, private targets need an explicit opt-in, HMAC-signed. |
+| **Sign-in** | Two-factor sign-in (TOTP authenticator app + one-time recovery codes; secrets encrypted with `WEB_SECRET_KEY`), required by role with `WEB_MFA_REQUIRED_ROLE`. |
+| **Audit** | Every entry is hash-chained to the previous one: `iam maintenance verify-audit` (or Audit → Verify) detects changed or removed entries; the service checks hourly and alerts. |
+
 ## Consumer site
 
 `CONSUMER_TARGET` picks where zips are applied:
@@ -220,7 +243,7 @@ iam consumer scan | watch
 iam apikey create NAME --scope S [--cidr C] [--expires-days N] | list | revoke NAME | scopes
 iam webuser add NAME --role R | passwd | role | disable | enable | unlock | list
 iam keys signing PREFIX | age FILE
-iam maintenance migrate | purge [--dry-run]
+iam maintenance migrate | purge [--dry-run] | verify-audit
 iam ping | search | export | raw | api-docs | import    OpenIAM tools
 ```
 

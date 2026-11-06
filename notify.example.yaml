@@ -1,0 +1,43 @@
+# Notifications: copy to notify.yaml (NOTIFY_CONFIG_PATH). Delivered by the producer
+# service (`iam serve`); the web UI never sees these secrets.
+#
+# Events: request.awaiting_approval request.approved request.rejected request.done
+#   request.failed sod.blocked campaign.started campaign.overdue access.expired
+#   audit.tampered report.scheduled   ("*" = all, "request.*" = every request event)
+
+email:
+  host: smtp.example.com
+  port: 587
+  security: starttls            # starttls | tls | none (none also needs allow_plain: true)
+  username: iam-notify@example.com
+  password_env: NOTIFY_SMTP_PASSWORD
+  from: iam-notify@example.com
+  to: [iam-approvers@example.com]
+  events: [request.awaiting_approval, request.failed, sod.blocked, campaign.overdue, audit.tampered]
+
+webhooks:
+  # Microsoft Teams (Workflows "post to a channel when a webhook request is received").
+  - name: teams-iam
+    url: https://example.webhook.office.com/webhookb2/...
+    template: teams              # preset: {"text": "**${title}**\n\n${text}"}
+    events: ["request.*", sod.blocked, audit.tampered]
+
+  # Slack incoming webhook.
+  # - name: slack-iam
+  #   url: https://hooks.slack.com/services/...
+  #   template: slack
+  #   events: ["*"]
+
+  # ServiceNow (scripted REST) on an internal address: private targets need allow_private.
+  # Each request is signed: X-Signature: sha256=<HMAC of the body with the secret>.
+  # - name: servicenow
+  #   url: https://itsm.corp.example/api/x_iam/events
+  #   allow_private: true
+  #   secret_env: NOTIFY_SNOW_SECRET
+  #   headers: { Authorization: "Basic ..." }
+  #   events: [request.done, request.failed]
+  #   template:
+  #     short_description: "${title}"
+  #     description: "${text}"
+  #     u_ticket: "${jira_ticket}"
+  #     u_event: "${event}"

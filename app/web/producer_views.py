@@ -29,8 +29,18 @@ def register(app: Flask) -> None:
         runs = outbox.recent_runs(5)
         blocked = next((r["error"] for r in runs[:1] if "MassDeleteError" in (r["error"] or "")), None)
         exports = sorted(outbox.last_exports().values(), key=lambda e: e["domain"])
+        from ..governance import Governance
+        from ..insights import Insights
+        from .charts import line_chart
+        ins = Insights(db)
+        jml = ins.weekly_jml()
+        series = {"Joiners": jml["series"]["joiners"], "Movers": jml["series"]["movers"],
+                  "Leavers": jml["series"]["leavers"]}
         return render_template("p_dashboard.html", producer=producer.activity_stats(time.time() - 86400),
-                               outbox=outbox.outbox_stats(), runs=runs, blocked=blocked, exports=exports)
+                               outbox=outbox.outbox_stats(), runs=runs, blocked=blocked, exports=exports,
+                               approvals=ins.approval_stats(), violations=len(Governance(db).violations()),
+                               chart=line_chart(jml["labels"], series, "Joiners, movers and leavers per week"),
+                               jml=jml, series=series)
 
     @app.get("/producer")
     def activity():
