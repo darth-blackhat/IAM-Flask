@@ -95,6 +95,14 @@ all their dependencies into `offline-bundle/debs/<distro>/`, ready for Ansible
 
 ## 5. Already offline, nothing to download
 
-- **Web UI:** no CDN, web fonts or JavaScript. All CSS is inline in the page.
+- **Web UI:** no CDN or web fonts. Its CSS and JavaScript are same-origin files in
+  `app/web/static/`, and the two libraries are already vendored in the repository
+  (`app/web/static/vendor/`, loaded with SRI hashes):
+
+  | Library | Version | Source | SHA-256 |
+|---|---|---|---|
+  | jQuery | 3.7.1 | https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js | `fc9a93dd241f6b045cbff0481cf4e1901becd0e12fb45166a8f17f95823f0b1a` |
+  | DataTables | 2.1.8 | https://cdnjs.cloudflare.com/ajax/libs/datatables.net/2.1.8/dataTables.min.js | `69306f7b554a5a8ce68e8f4d6f613bdd1bcfe2df313962e7fc83cf5f6be5e085` |
+  | DataTables CSS | 2.1.8 | https://cdnjs.cloudflare.com/ajax/libs/datatables.net-dt/2.1.8/css/dataTables.dataTables.min.css | `10587c5eacd75926baec92990840987da4a8fb66b91c8c43ac955e7b174f21b0` |
 - **Ansible role:** uses only `ansible.builtin` modules, so no Galaxy collections are needed.
   The control node needs `ansible-core` (already installed in your WSL).

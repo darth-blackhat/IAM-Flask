@@ -8,13 +8,15 @@ optional expiry. BACKEND_API_KEY (env) still works as a bootstrap key with every
 import hashlib
 import hmac
 import ipaddress
+import json
 import secrets
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, text, update
 
 from .db import Database
 
@@ -170,16 +172,56 @@ class RateLimiter:
         return True, 0.0
 
 
+_AUDIT_LOCK = threading.Lock()          # one process (SQLite): chain writes one at a time
+_AUDIT_PG_LOCK = 0x6269616D61756474      # pg_advisory_xact_lock key (several instances)
+
+
+def audit_hash(prev_hash: str | None, row: dict[str, Any]) -> str:
+    """sha256 over the previous entry's hash and this entry's content."""
+    body = [prev_hash, repr(float(row["at"])), row["channel"], row["actor"], row["ip"], row["action"],
+            row["target"], bool(row["ok"]), row["detail"]]
+    return hashlib.sha256(json.dumps(body, separators=(",", ":")).encode()).hexdigest()
+
+
 class AuditTrail:
+    """Append-only log of who did what. Each entry carries the hash of the one before it, so
+    changing or deleting an entry breaks the chain (`verify`). Retention purges cut the
+    oldest end: the first remaining entry simply anchors the chain."""
+
     def __init__(self, db: Database):
         self.db, self.t = db, db.tables.audit_trail
 
     def record(self, channel: str, actor: str, action: str, *, ok: bool, ip: str | None = None,
                target: str | None = None, detail: str | None = None) -> None:
-        with self.db.begin() as conn:
-            conn.execute(insert(self.t).values(at=time.time(), channel=channel, actor=actor[:120],
-                                               ip=ip, action=action[:60], target=target, ok=ok,
-                                               detail=(detail or "")[:2000] or None))
+        row = {"at": time.time(), "channel": channel, "actor": actor[:120], "ip": ip,
+               "action": action[:60], "target": target, "ok": ok, "detail": (detail or "")[:2000] or None}
+        with _AUDIT_LOCK, self.db.begin() as conn:
+            if self.db.is_postgres:
+                conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _AUDIT_PG_LOCK})
+            prev = conn.execute(select(self.t.c.hash).where(self.t.c.hash.is_not(None))
+                                .order_by(self.t.c.id.desc()).limit(1)).scalar()
+            conn.execute(insert(self.t).values(**row, prev_hash=prev, hash=audit_hash(prev, row)))
+
+    def verify(self, batch: int = 5000) -> dict[str, Any]:
+        """Walk the chain. {"ok", "checked", "first_bad_id", "problem"}."""
+        c = self.t.c
+        checked, last_id, expected_prev = 0, 0, None
+        first = True
+        while True:
+            with self.db.begin() as conn:
+                rows = [dict(r._mapping) for r in conn.execute(
+                    select(self.t).where(c.hash.is_not(None), c.id > last_id).order_by(c.id).limit(batch))]
+            if not rows:
+                return {"ok": True, "checked": checked, "first_bad_id": None, "problem": None}
+            for r in rows:
+                if not first and r["prev_hash"] != expected_prev:
+                    return {"ok": False, "checked": checked, "first_bad_id": r["id"],
+                            "problem": "link broken: an entry before it was changed or removed"}
+                if audit_hash(r["prev_hash"], r) != r["hash"]:
+                    return {"ok": False, "checked": checked, "first_bad_id": r["id"],
+                            "problem": "content does not match its hash: the entry was changed"}
+                first, expected_prev, last_id = False, r["hash"], r["id"]
+                checked += 1
 
     def page(self, *, actor: str | None = None, channel: str | None = None, ok: bool | None = None,
              limit: int = 200, before_id: int | None = None) -> list[dict[str, Any]]:

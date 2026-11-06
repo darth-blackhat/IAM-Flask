@@ -162,7 +162,12 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("session_epoch", Integer, nullable=False, default=0),  # bump = log out everywhere
         Column("created_at", Float, nullable=False),
         Column("last_login_at", Float),
-        Column("password_changed_at", Float, nullable=False))
+        Column("password_changed_at", Float, nullable=False),
+        Column("totp_secret", Text),                 # AES-GCM encrypted; null = no MFA
+        Column("totp_last_counter", BigInteger),     # last accepted time step (no replay)
+        Column("recovery_codes", JsonType),          # sha256 of unused one-time codes
+        Column("approver_scope", JsonType),          # domains / OUs this admin may approve; null = all
+        Column("employee_id", String(255)))          # self-service: this web user is that employee
     t.audit_trail = Table(
         "audit_trail", m,
         Column("id", IdType, primary_key=True, autoincrement=True),
@@ -173,7 +178,9 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("action", String(60), nullable=False),
         Column("target", Text),
         Column("ok", Boolean, nullable=False),
-        Column("detail", Text))
+        Column("detail", Text),
+        Column("prev_hash", String(64)),             # hash chain: tampering is detectable
+        Column("hash", String(64)))
     t.operator_requests = Table(
         "operator_requests", m,
         Column("id", IdType, primary_key=True, autoincrement=True),
@@ -182,10 +189,16 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("service", String(20), nullable=False),            # producer | consumer
         Column("action", String(40), nullable=False),
         Column("params", JsonType, nullable=False),
-        Column("status", String(20), nullable=False),             # pending | running | done | failed
+        # awaiting_approval | rejected | pending | running | done | failed
+        Column("status", String(20), nullable=False),
         Column("started_at", Float),
         Column("finished_at", Float),
         Column("result", JsonType),
+        Column("approvals", JsonType),           # [{"by", "at", "note"}] so far
+        Column("required_approvals", Integer),    # 2 for destructive / bulk changes
+        Column("decided_by", String(120)),       # who approved / rejected it
+        Column("decided_at", Float),
+        Column("decision_note", Text),
         Index("operator_requests_pending", "service", "status", "id"))
     t.drift_reports = Table(
         "drift_reports", m,
@@ -235,6 +248,89 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("acknowledged_by", String(120)),
         Column("acknowledged_at", Float),
         Column("note", Text))
+
+    # ---- governance (producer site) ------------------------------------------
+    # Segregation of duties: holding both sides of a policy is a toxic combination.
+    t.sod_policies = Table(
+        "sod_policies", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("name", String(200), nullable=False, unique=True),
+        Column("description", Text),
+        Column("left_kind", String(20), nullable=False),           # group | role | organization
+        Column("left_name", String(500), nullable=False),
+        Column("right_kind", String(20), nullable=False),
+        Column("right_name", String(500), nullable=False),
+        Column("enabled", Boolean, nullable=False),
+        Column("created_by", String(120), nullable=False),
+        Column("created_at", Float, nullable=False))
+    # Access certification: reviewers confirm or revoke each entitlement in a campaign.
+    t.cert_campaigns = Table(
+        "cert_campaigns", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("name", String(200), nullable=False),
+        Column("scope_kind", String(20)),                          # null = every kind
+        Column("scope_name", String(500)),                         # null = every object
+        Column("status", String(20), nullable=False),              # open | closed
+        Column("created_by", String(120), nullable=False),
+        Column("created_at", Float, nullable=False),
+        Column("due_at", Float),
+        Column("closed_by", String(120)),
+        Column("closed_at", Float),
+        Column("overdue_notified_at", Float))
+    t.cert_items = Table(
+        "cert_items", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("campaign_id", IdType, nullable=False, index=True),
+        Column("employee_id", String(255), nullable=False),
+        Column("kind", String(20), nullable=False),
+        Column("object_name", String(500), nullable=False),
+        Column("source", String(40), nullable=False),              # producer | openiam
+        Column("decision", String(20)),                            # null | certify | revoke
+        Column("decided_by", String(120)),
+        Column("decided_at", Float),
+        Column("note", Text),
+        Column("request_id", IdType))                              # revocation request
+    # Notification outbox: written by anyone, delivered by the producer service.
+    t.notifications = Table(
+        "notifications", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("at", Float, nullable=False),
+        Column("event", String(60), nullable=False),
+        Column("title", String(300), nullable=False),
+        Column("text", Text, nullable=False),
+        Column("data", JsonType),
+        Column("status", String(20), nullable=False),        # pending | sent | dead
+        Column("attempts", Integer, nullable=False),
+        Column("last_error", Text),
+        Column("sent_at", Float),
+        Index("notifications_pending", "status", "id"))
+    # Time-limited access: memberships granted until a date, removed automatically after it.
+    t.timed_grants = Table(
+        "timed_grants", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("request_id", IdType),                       # the approved grant
+        Column("params", JsonType, nullable=False),         # the add_member request (to reverse)
+        Column("expires_at", Float, nullable=False, index=True),
+        Column("status", String(20), nullable=False),       # active | expiring | expired
+        Column("removal_request_id", IdType),
+        Column("created_at", Float, nullable=False))
+    t.report_schedules = Table(
+        "report_schedules", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("report", String(60), nullable=False),
+        Column("every", String(20), nullable=False),          # daily | weekly
+        Column("enabled", Boolean, nullable=False),
+        Column("last_run_at", Float),
+        Column("last_file", Text),
+        Column("created_by", String(120), nullable=False),
+        Column("created_at", Float, nullable=False))
+    t.saved_searches = Table(
+        "saved_searches", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("username", String(100), nullable=False, index=True),
+        Column("name", String(100), nullable=False),
+        Column("path", String(1000), nullable=False),          # a local /directory... URL
+        Column("created_at", Float, nullable=False))
     return t
 
 

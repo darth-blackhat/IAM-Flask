@@ -23,7 +23,8 @@ DEFAULT_ATTRIBUTES: dict[str, dict[str, str]] = {
              "email": "mail", "employeeId": "employeeID", "phone": "telephoneNumber"},
     "group": {"name": "cn", "description": "description"},
     "role": {"name": "cn", "description": "description"},
-    "organization": {"name": "ou", "description": "description"},
+    "organization": {"name": "ou", "description": "description",
+                     "organizationType": "businessCategory"},
 }
 
 

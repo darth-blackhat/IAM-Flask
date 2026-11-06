@@ -1,4 +1,5 @@
 import asyncio
+import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -27,6 +28,9 @@ from .producer import (ProducerEvent, ProducerProcessor, ProducerResult, Produce
                        load_producer_config)
 from .producer.config import KINDS
 from .service import inject_user, inject_users
+from .directory import DirectoryService
+from .jira import Jira
+from .notify import Notifier, load_notify_config
 from .db import Database
 from .sync import (MassDeleteError, Store, SyncBusy, SyncError, SyncService, build_target,
                    load_config)
@@ -112,10 +116,20 @@ async def lifespan(app: FastAPI):
     tasks = []
     if settings.sync_schedule and app.state.sync is not None:
         tasks.append(asyncio.create_task(app.state.sync.loop()))
-    if app.state.sync is not None and settings.operator_poll_seconds > 0:
+    handlers: dict = {}
+    if app.state.sync is not None:
+        handlers.update(app.state.sync.operator_handlers())
+    if app.state.sync is not None or app.state.producer is not None:
+        # The web UI's user / group / organization / role pages.
+        handlers.update(DirectoryService(app.state.openiam, producer=app.state.producer,
+                                         sync=app.state.sync, jira=Jira(settings), db=db).operator_handlers())
+    if handlers and settings.operator_poll_seconds > 0:
         tasks.append(asyncio.create_task(_operator_loop(
-            OperatorRequests(db), "producer", app.state.sync.operator_handlers(),
-            settings.operator_poll_seconds)))
+            OperatorRequests(db), "producer", handlers, settings.operator_poll_seconds)))
+    notify_cfg = load_notify_config(settings.notify_config_path)
+    if notify_cfg is not None and settings.notify_poll_seconds > 0:
+        tasks.append(asyncio.create_task(_notify_loop(Notifier(db, notify_cfg), settings.notify_poll_seconds)))
+    tasks.append(asyncio.create_task(_watch_loop(db, reports_folder=settings.reports_folder)))
     logger.info("backend-iam started: openiam={} sync={} producer={} scheduler={}",
                 settings.openiam_base_url, app.state.sync is not None,
                 app.state.producer is not None, settings.sync_schedule)
@@ -144,6 +158,65 @@ async def _operator_loop(requests: OperatorRequests, service: str, handlers: dic
             raise
         except Exception:
             logger.exception("operator request loop")
+        await asyncio.sleep(every)
+
+
+async def _notify_loop(notifier: Notifier, every: float) -> None:
+    """Deliver queued notifications (email / webhooks)."""
+    while True:
+        try:
+            await notifier.run_pending()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("notification loop")
+        await asyncio.sleep(every)
+
+
+async def _watch_loop(db: Database, every: float = 300.0, reports_folder: str = "data/reports") -> None:
+    """Every 5 minutes: end expired time-limited access. Hourly: alert on a broken audit
+    chain and on overdue access reviews."""
+    from .directory import expire_grants
+    from .governance import Governance
+    from .notify import Notifications
+    from .security import AuditTrail
+    last_bad, last_hourly = None, 0.0
+    while True:
+        try:
+            for rid in await asyncio.to_thread(expire_grants, db):
+                logger.info("time-limited access ended: removal request {}", rid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("access expiry")
+        try:
+            from .reports import ReportSchedules
+            for path in await asyncio.to_thread(ReportSchedules(db).run_due, reports_folder):
+                logger.info("scheduled report written: {}", path)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("scheduled reports")
+        if time.time() - last_hourly < 3600:
+            await asyncio.sleep(every)
+            continue
+        last_hourly = time.time()
+        try:
+            notes = Notifications(db)
+            result = await asyncio.to_thread(AuditTrail(db).verify)
+            if not result["ok"] and result["first_bad_id"] != last_bad:
+                last_bad = result["first_bad_id"]
+                logger.critical("AUDIT TRAIL TAMPERED at entry {}: {}", last_bad, result["problem"])
+                notes.add("audit.tampered", "Audit trail tampered",
+                          f"The audit trail's hash chain is broken at entry {last_bad}: {result['problem']}.",
+                          result)
+            for c in Governance(db).overdue_campaigns():
+                notes.add("campaign.overdue", f"Access review overdue: {c['name']}",
+                          f"{c['open_items']} of {c['total']} entitlement(s) still to review.", {"campaign_id": c["id"]})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("watch loop")
         await asyncio.sleep(every)
 
 

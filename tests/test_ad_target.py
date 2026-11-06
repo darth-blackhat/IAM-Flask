@@ -147,3 +147,13 @@ def test_ad_target_requires_config(database, settings, tmp_path):
     c = ConsumerConfig.model_validate({"inbox": str(tmp_path)})
     with pytest.raises(Exception, match="ad:"):
         Consumer(None, ConsumerStore(database), c, settings, target="ad")
+
+
+def test_ou_is_created_with_its_organization_type(make_ad_consumer, ad, tmp_path):
+    drop(tmp_path, [line(1, "create", "organizationalUnit", {"ou": "Branch Lagos"}, "web UI",
+                         attributes={"ou": "Branch Lagos", "description": "West Africa",
+                                     "businessCategory": "Branch"})])
+    [f] = run(make_ad_consumer().scan())["files"]
+    assert f["status"] == "applied", f
+    [ou] = find(ad, "(ou=Branch Lagos)")
+    assert ou["attributes"]["businessCategory"] in ("Branch", ["Branch"])

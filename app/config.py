@@ -51,6 +51,28 @@ class Settings(BaseSettings):
     web_session_hours: int = 12
     web_max_failures: int = 5
     web_lock_minutes: int = 15
+    # Jira base URL, e.g. https://yourcompany.atlassian.net: ticket keys in the web UI
+    # link to <base>/browse/<KEY>. Empty: shown as plain text.
+    jira_base_url: str = ""
+    # Users of this role or above must set up MFA (TOTP) before using the web UI:
+    # viewer | operator | admin. Empty: optional for everyone.
+    web_mfa_required_role: str = ""
+    # Approvals needed for destructive directory changes (delete / offboard); others need 1.
+    approvals_for_destructive: int = 2
+    # Jira (producer service only): off | warn | enforce. See app/jira.py.
+    jira_check: str = "off"
+    jira_allowed_statuses: str = ""          # e.g. "Approved,In Progress" (empty: any status)
+    jira_comment: bool = False               # comment the outcome on the ticket
+    jira_user: str = ""                      # Jira Cloud account email (empty: bearer PAT)
+    jira_api_token: SecretStr = SecretStr("")
+    # Notifications (email / webhooks), delivered by the producer service.
+    notify_config_path: str = "notify.yaml"
+    notify_poll_seconds: float = 10.0
+    # Batches (bulk import, mover) larger than this need the destructive approval count.
+    bulk_dual_approval_over: int = 10
+    bulk_max_rows: int = 1000
+    # Scheduled reports are written here by the producer service.
+    reports_folder: str = "data/reports"
 
     # This backend's own database (sync state, outbox, producer records) - never OpenIAM's.
     # Production: postgresql+psycopg://user:pass@host:5432/dbname

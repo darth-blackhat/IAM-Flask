@@ -14,6 +14,8 @@ from ..db import Database
 ROLES = ("viewer", "operator", "admin")
 RANK = {r: i for i, r in enumerate(ROLES)}
 MIN_PASSWORD = 12
+# Never shown or listed.
+SECRET_COLUMNS = ("password_hash", "totp_secret", "recovery_codes", "totp_last_counter")
 _SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1}
 
 
@@ -58,8 +60,13 @@ class WebUserStore:
 
     def list(self) -> list[dict[str, Any]]:
         with self.db.begin() as conn:
-            return [{k: v for k, v in r._mapping.items() if k != "password_hash"}
-                    for r in conn.execute(select(self.t).order_by(self.t.c.username))]
+            out = []
+            for r in conn.execute(select(self.t).order_by(self.t.c.username)):
+                row = {k: v for k, v in r._mapping.items() if k not in SECRET_COLUMNS}
+                row["mfa"] = bool(r.totp_secret)
+                row["recovery_left"] = len(r.recovery_codes or [])
+                out.append(row)
+            return out
 
     def count(self) -> int:
         return len(self.list())
@@ -110,6 +117,46 @@ class WebUserStore:
     def logout_everywhere(self, username: str) -> bool:
         user = self.get(username)
         return bool(user) and self._set(username, session_epoch=user["session_epoch"] + 1)
+
+    # ---- MFA -----------------------------------------------------------------
+
+    def enable_mfa(self, username: str, sealed_secret: str, counter: int, recovery_hashes: list[str]) -> bool:
+        user = self.get(username)
+        # New factor: every other session of this user ends.
+        return bool(user) and self._set(username, totp_secret=sealed_secret, totp_last_counter=counter,
+                                        recovery_codes=recovery_hashes,
+                                        session_epoch=user["session_epoch"] + 1)
+
+    def disable_mfa(self, username: str) -> bool:
+        user = self.get(username)
+        return bool(user) and self._set(username, totp_secret=None, totp_last_counter=None,
+                                        recovery_codes=None, session_epoch=user["session_epoch"] + 1)
+
+    def accept_counter(self, username: str, counter: int) -> bool:
+        """Record a used time step; False if it (or a later one) was already used."""
+        c = self.t.c
+        with self.db.begin() as conn:
+            return conn.execute(update(self.t).where(
+                c.username == username,
+                (c.totp_last_counter.is_(None)) | (c.totp_last_counter < counter))
+                .values(totp_last_counter=counter)).rowcount > 0
+
+    def use_recovery_code(self, username: str, code_hash: str) -> bool:
+        """Consume one recovery code (each works once)."""
+        user = self.get(username)
+        codes = list((user or {}).get("recovery_codes") or [])
+        match = next((h for h in codes if hmac.compare_digest(h, code_hash)), None)
+        if match is None:
+            return False
+        codes.remove(match)
+        return self._set(username, recovery_codes=codes)
+
+    def set_approver_scope(self, username: str, scope: list[str] | None) -> bool:
+        """Domains / organizations this user may approve; None = everything."""
+        clean = sorted({s.strip() for s in scope or [] if s and s.strip()}) or None
+        if clean and any(len(s) > 500 or any(ord(ch) < 32 for ch in s) for s in clean):
+            raise ValueError("invalid scope entry")
+        return self._set(username, approver_scope=clean)
 
     def authenticate(self, username: str, password: str) -> tuple[dict | None, str]:
         """(user, "") or (None, reason). Reasons are for the audit trail, not the screen."""

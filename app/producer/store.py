@@ -82,6 +82,12 @@ class ProducerStore:
             self.db.upsert(conn, self.directory, {"kind": kind, "name": name, "object_id": object_id},
                            keys=["kind", "name"])
 
+    def forget(self, kind: str, name: str) -> None:
+        """Drop a cached name -> id (the object was renamed or deleted)."""
+        d = self.directory.c
+        with self.db.begin() as conn:
+            conn.execute(delete(self.directory).where(d.kind == kind, d.name == name))
+
     def processed(self, event_id: str) -> dict | None:
         p = self.processed_t.c
         with self.db.begin() as conn:

@@ -18,9 +18,11 @@ logs/
 vault.yml
 sync.yaml
 producer.yaml
+notify.yaml
 consumer.yaml
 !deploy/ansible/inventories/*/files/**/*.yaml
 
 # Offline build inputs (large; carried separately, see deploy/offline/)
-vendor/
+# Top-level wheels only: app/web/static/vendor/ (the UI's JS) is committed.
+/vendor/
 offline-bundle/

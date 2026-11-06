@@ -35,6 +35,22 @@ directories:
   organization:
     search_path: /webconsole/rest/api/organizations/search
     aliases: {}
+    # Web UI directory pages (endpoints from `iam api-docs`). {type_id} is the OpenIAM
+    # organization type of the chosen type (see organization_type_ids below).
+    # create_path: /webconsole/rest/api/organizations/<save endpoint>
+    # create_body: { name: "{name}", description: "{description}", organizationTypeId: "{type_id}" }
+    # update_path: /webconsole/rest/api/organizations/<save endpoint>
+    # update_body: { id: "{id}", name: "{new_name}", description: "{description}", organizationTypeId: "{type_id}" }
+    # delete_path: /webconsole/rest/api/organizations/<delete endpoint>
+
+# Organization types in the web UI (office, branch, division, department, ...) -> your
+# OpenIAM organizationTypeId. Look them up in the webconsole; unlisted types send the key.
+# organization_type_ids:
+#   organization: ORGANIZATION
+#   division: DIVISION
+#   department: DEPARTMENT
+#   office: <id>
+#   branch: <id>
 
 # OpenIAM lifecycle action used for each event (see USER_ACTIONS in the client).
 lifecycle_actions:

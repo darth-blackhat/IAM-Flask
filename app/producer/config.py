@@ -49,8 +49,22 @@ class DirectoryConfig(BaseModel):
     # Endpoint that creates one (BasicAjaxResponse). Not in OpenIAM's published docs:
     # take it from your /webconsole/api-docs. Unset means unknown names are an error.
     create_path: str | None = None
-    # Body sent to create_path; "{name}" is replaced with the name.
+    # Body sent to create_path; "{name}" is replaced with the name ("{description}" too,
+    # when created from the web UI).
     create_body: dict[str, Any] = {"name": "{name}"}
+    # Edit / delete / nesting, used by the web UI's directory pages. Also not in OpenIAM's
+    # published docs: take them from /webconsole/api-docs. Unset = that action is refused.
+    # Placeholders: {id} {name} {new_name} {description} {parent_id} {child_id}, and for
+    # organizations {type} (label, e.g. "Branch") and {type_id} (organization_type_ids).
+    update_path: str | None = None
+    update_body: dict[str, Any] = {"id": "{id}", "name": "{new_name}", "description": "{description}"}
+    delete_path: str | None = None
+    delete_body: dict[str, Any] = {"id": "{id}"}
+    # Groups only: put a group inside another group (the child's memberOf).
+    add_child_path: str | None = None
+    add_child_body: dict[str, Any] = {"groupId": "{parent_id}", "childGroupId": "{child_id}"}
+    remove_child_path: str | None = None
+    remove_child_body: dict[str, Any] = {"groupId": "{parent_id}", "childGroupId": "{child_id}"}
 
 
 def _default_directories() -> dict[Kind, DirectoryConfig]:
@@ -86,6 +100,9 @@ class ProducerConfig(BaseModel):
     lifecycle_actions: LifecycleActions = LifecycleActions()
     # On termination, remove every group / role / organization this backend granted.
     terminate_removes_access: bool = True
+    # Organization type (web UI key, e.g. "branch") -> OpenIAM organizationTypeId, used as
+    # "{type_id}" in directories.organization create_body / update_body. Unlisted: the key.
+    organization_type_ids: dict[str, str] = {}
     # status name -> status value -> rule. Unknown values are reported as warnings.
     status_rules: dict[str, dict[str, StatusRule]] = {}
 

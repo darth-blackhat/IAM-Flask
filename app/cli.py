@@ -298,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     ms.add_parser("migrate", help="bring the database schema up to date (also done at start)")
     m = ms.add_parser("purge", help="delete rows older than the RETENTION_* windows")
     m.add_argument("--dry-run", action="store_true", help="only count what would be deleted")
+    ms.add_parser("verify-audit", help="check the audit trail's hash chain (exit 1 if tampered)")
 
     s = sub.add_parser("web", help="producer-site web UI (activity, AD instructions, runs, API keys)")
     s.add_argument("--host", default="127.0.0.1")
@@ -372,6 +373,11 @@ def main(argv: list[str] | None = None) -> int:
         db = build_database(settings)
         if args.maintenance_cmd == "migrate":
             _print({"schema_version": db.schema_version()})
+        elif args.maintenance_cmd == "verify-audit":
+            from .security import AuditTrail
+            result = AuditTrail(db).verify()
+            _print(result)
+            return 0 if result["ok"] else 1
         else:
             _print(purge(db, settings, dry_run=args.dry_run))
         return 0
