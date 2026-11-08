@@ -10,7 +10,10 @@ from ldap3 import MOCK_SYNC, OFFLINE_AD_2012_R2, Connection, Server
 from app.config import Settings, get_settings
 from app.consumer import Consumer, ConsumerConfig, ConsumerStore
 from app.consumer.ad_target import AdApplier
+from app.directory import DirectoryService
+from app.producer import ProducerConfig, ProducerProcessor, ProducerStore
 from app.sync import Store, SyncConfig, SyncService, build_target
+from app.web import create_app
 from app.db import Database
 from app.main import app
 from app.openiam import OpenIAMClient
@@ -156,3 +159,42 @@ def make_ad_consumer(database, settings, tmp_path, ad):
         applier = AdApplier(ad_cfg(**cfg), conn_factory=lambda: ad)
         return Consumer(None, ConsumerStore(database), c, settings, target="ad", ad=applier)
     return _make
+
+
+# ---- web UI and directory fixtures (shared by several test modules) ---------------------
+
+ADMIN_PW = "admin-password-123"
+OPENIAM_GROUPS = "/webconsole/rest/api/groups"
+
+
+@pytest.fixture
+def make_web(database):
+    """A web UI test client; the first one bootstraps the admin `boss` / ADMIN_PW."""
+    def _make(site="producer", **over):
+        settings = Settings(_env_file=None, web_username="boss", web_password=ADMIN_PW,
+                            web_cookie_secure=False, web_secret_key="test-secret", **over)
+        app = create_app(settings, database, site=site)
+        app.testing = True
+        return app.test_client()
+    return _make
+
+
+@pytest.fixture
+def sync(database, make_client, tmp_path):
+    cfg = SyncConfig.model_validate({
+        "entities": {"user": {"path": "/webconsole/rest/api/users/search", "queries": [{"lastName": "*"}]},
+                     "group": {"path": f"{OPENIAM_GROUPS}/search", "queries": [{"name": "*"}]}},
+        "export": {"folder": str(tmp_path / "share"),
+                   "domains": {"by_field": {"user": "domain", "group": "domain"}}},
+    })
+    return SyncService(make_client(), Store(database), cfg, None)
+
+
+@pytest.fixture
+def service(sync, database, make_client, settings):
+    cfg = ProducerConfig.model_validate({"directories": {"group": {
+        "search_path": f"{OPENIAM_GROUPS}/search", "create_path": f"{OPENIAM_GROUPS}/save",
+        "create_body": {"name": "{name}", "description": "{description}"}}}})
+    producer = ProducerProcessor(make_client(), ProducerStore(database), cfg, settings,
+                                 ad=sync.cfg.ad, outbox=sync.store)
+    return DirectoryService(make_client(), producer=producer, sync=sync)

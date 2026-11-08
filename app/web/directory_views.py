@@ -15,7 +15,7 @@ import csv
 import io
 import os
 
-from ..directory import KINDS, ORG_TYPES, DirectoryRequest, TimedGrants, plan
+from ..directory import KINDS, ORG_TYPES, DirectoryRequest, plan
 from ..governance import Governance
 from ..notify import Notifications
 from ..operator import ApprovalError, OperatorRequests, approvals_needed, in_scope

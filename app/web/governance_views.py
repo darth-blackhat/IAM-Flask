@@ -6,7 +6,6 @@ after a second person approves it (Approvals).
 """
 
 import time
-from typing import Any
 
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request
 from pydantic import ValidationError
@@ -16,12 +15,11 @@ from ..governance import KINDS, Governance, GovernanceError, report_csv
 from ..reports import REPORTS, report_rows
 from ..notify import Notifications
 from ..operator import OperatorRequests
-from ..sync.store import Store
 
 def register(app: Flask) -> None:
     ext = app.extensions["biam"]
     db, record, require_role = ext["db"], ext["record"], ext["require_role"]
-    gov, requests, snapshot = Governance(db), OperatorRequests(db), Store(db)
+    gov, requests = Governance(db), OperatorRequests(db)
     notes = Notifications(db)
 
     def who() -> str:

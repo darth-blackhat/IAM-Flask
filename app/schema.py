@@ -124,7 +124,7 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("at", Float, nullable=False),
         Column("file_sha256", String(64), index=True),
         Column("domain", String(500)),
-        Column("entity", String(20)),
+        Column("entity", String(60)),              # e.g. "user", "ad:organizationalUnit"
         Column("source_id", String(255)),
         Column("action", String(40), nullable=False),
         Column("ok", Boolean, nullable=False),

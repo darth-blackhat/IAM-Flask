@@ -12,8 +12,8 @@ from app.governance import Governance
 from app.operator import OperatorRequests, approvals_needed
 from app.sync import Store
 
-from .test_directory import J, queued, service, sync  # noqa: F401 (fixtures)
-from .test_web import add_user, csrf, login, make_web  # noqa: F401 (fixture)
+from .test_directory import J, queued
+from .test_web import add_user, csrf, login
 
 
 def run(coro):

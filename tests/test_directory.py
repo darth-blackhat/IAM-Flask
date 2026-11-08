@@ -6,10 +6,10 @@ import pytest
 
 from app.directory import DirectoryError, DirectoryRequest, DirectoryService
 from app.operator import ApprovalError, OperatorRequests
-from app.producer import ProducerConfig, ProducerProcessor, ProducerStore
-from app.sync import Store, SyncConfig, SyncService
+from app.producer import ProducerConfig, ProducerStore
+from app.sync import Store
 
-from .test_web import add_user, csrf, login, make_web  # noqa: F401 (fixture)
+from .test_web import add_user, csrf, login
 
 GROUPS = "/webconsole/rest/api/groups"
 # Every directory request names a Jira ticket and a justification.
@@ -18,27 +18,6 @@ J = {"jira_ticket": "IAM-101", "reason": "needed for the test case"}
 
 def run(coro):
     return asyncio.run(coro)
-
-
-@pytest.fixture
-def sync(database, make_client, tmp_path):
-    cfg = SyncConfig.model_validate({
-        "entities": {"user": {"path": "/webconsole/rest/api/users/search", "queries": [{"lastName": "*"}]},
-                     "group": {"path": f"{GROUPS}/search", "queries": [{"name": "*"}]}},
-        "export": {"folder": str(tmp_path / "share"),
-                   "domains": {"by_field": {"user": "domain", "group": "domain"}}},
-    })
-    return SyncService(make_client(), Store(database), cfg, None)
-
-
-@pytest.fixture
-def service(sync, database, make_client, settings):
-    cfg = ProducerConfig.model_validate({"directories": {"group": {
-        "search_path": f"{GROUPS}/search", "create_path": f"{GROUPS}/save",
-        "create_body": {"name": "{name}", "description": "{description}"}}}})
-    producer = ProducerProcessor(make_client(), ProducerStore(database), cfg, settings,
-                                 ad=sync.cfg.ad, outbox=sync.store)
-    return DirectoryService(make_client(), producer=producer, sync=sync)
 
 
 def queued(sync):

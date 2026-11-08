@@ -12,7 +12,8 @@ from app.security import AuditTrail
 from app.web.auth import WebUserStore
 from app.web.mfa import code_at, seal, unseal, verify, MfaError, STEP
 
-from .test_web import ADMIN_PW, add_user, csrf, login, make_web  # noqa: F401 (fixture)
+from .conftest import ADMIN_PW
+from .test_web import add_user, csrf, login
 
 
 def now_code(secret: str, offset: int = 0) -> str:

@@ -1,29 +1,16 @@
 import re
 import time
 
-import pytest
 
-from app.config import Settings
 from app.consumer import ConsumerStore
 from app.operator import OperatorRequests
 from app.producer import ProducerStore
 from app.security import AuditTrail
 from app.sync import Store
-from app.web import create_app
 from app.web.auth import WebUserStore
 
-ADMIN_PW = "admin-password-123"
+from .conftest import ADMIN_PW
 
-
-@pytest.fixture
-def make_web(database):
-    def _make(site="producer", **over):
-        settings = Settings(_env_file=None, web_username="boss", web_password=ADMIN_PW,
-                            web_cookie_secure=False, web_secret_key="test-secret", **over)
-        app = create_app(settings, database, site=site)
-        app.testing = True
-        return app.test_client()
-    return _make
 
 
 def csrf(client, path="/login"):
