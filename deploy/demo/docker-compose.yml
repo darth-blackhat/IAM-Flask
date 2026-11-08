@@ -1,0 +1,50 @@
+# Local demo: both web UIs in Docker, each site with its own database.
+#
+#   cd deploy/demo
+#   python make_env.py            # once: writes .env (gitignored) with passwords and keys
+#   docker build --network=none -t backend-iam:demo ../..
+#   docker compose up -d
+#
+#   producer UI   http://127.0.0.1:18090   (directory, approvals, governance, ...)
+#   oversight UI  http://127.0.0.1:18091   (consumer site: zips, AD plans, AD changes)
+#
+# Demo only: plain HTTP on localhost, SQLite in volumes, no OpenIAM / AD behind it.
+# Production runs behind the HTTPS proxy with PostgreSQL (deploy/ansible).
+
+x-hardened: &hardened
+  image: backend-iam:demo
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  producer-web:
+    <<: *hardened
+    command: ["web", "--host", "0.0.0.0", "--port", "8090"]
+    ports: ["127.0.0.1:18090:8090"]
+    environment:
+      DATABASE_URL: sqlite:////data/producer.db
+      WEB_USERNAME: admin
+      WEB_PASSWORD: ${DEMO_ADMIN_PASSWORD:?run make_env.py first}
+      WEB_SECRET_KEY: ${DEMO_PRODUCER_SECRET:?run make_env.py first}
+      WEB_COOKIE_SECURE: "false"
+    volumes: [producer-data:/data]
+
+  consumer-web:
+    <<: *hardened
+    command: ["oversight", "--host", "0.0.0.0", "--port", "8091"]
+    ports: ["127.0.0.1:18091:8091"]
+    environment:
+      DATABASE_URL: sqlite:////data/consumer.db
+      CONSUMER_TARGET: ad            # a site without OpenIAM: AD plans and approval
+      WEB_USERNAME: admin
+      WEB_PASSWORD: ${DEMO_ADMIN_PASSWORD:?run make_env.py first}
+      WEB_SECRET_KEY: ${DEMO_CONSUMER_SECRET:?run make_env.py first}
+      WEB_COOKIE_SECURE: "false"
+    volumes: [consumer-data:/data]
+
+volumes:
+  producer-data:
+  consumer-data:

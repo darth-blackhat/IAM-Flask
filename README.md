@@ -194,6 +194,21 @@ Keys: `iam keys signing PREFIX` creates the producer's signing key pair, and
 - **Logs:** loguru to journald (`journalctl -u backend-iam-<service>`). Set `LOG_JSON=true`
   for log shippers.
 
+## Try it in Docker (demo)
+
+Both web UIs, each site with its own database, hardened like production (read-only, no
+capabilities, non-root) but on plain HTTP on localhost:
+
+```bash
+cd deploy/demo
+python make_env.py                                   # once: .env with the admin password
+docker build --network=none -t backend-iam:demo ../..
+docker compose up -d
+```
+
+Producer UI: http://127.0.0.1:18090 · consumer oversight UI: http://127.0.0.1:18091 (sign in
+as `admin` with the password `make_env.py` printed). There is no OpenIAM or AD behind the demo.
+
 ## Deploy (Ansible + Docker + systemd)
 
 ```bash
