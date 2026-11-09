@@ -147,8 +147,7 @@ class Consumer:
         self._names: dict[tuple[str, str], str] = {}
         self._trusted = {bundlesec.key_id(k): k for k in
                          (bundlesec.load_public_key(p) for p in cfg.trusted_signing_keys)}
-        self._identities = (bundlesec.load_identities(cfg.age_identity_file)
-                            if cfg.age_identity_file else None)
+        self._identities = receipts.load_all_identities(cfg.age_identity_file)
         # Signed receipts back to the producer (None: not configured on this site).
         self.receipts = ReceiptWriter(cfg.receipts, store.db) if cfg.receipts else None
         # Called once per loop iteration (daily retention purge).

@@ -212,6 +212,37 @@ docker compose up -d
 Producer UI: http://127.0.0.1:18090 · consumer oversight UI: http://127.0.0.1:18091 (sign in
 as `admin` with the password `make_env.py` printed). There is no OpenIAM or AD behind the demo.
 
+## Directory requests from other systems (REST API)
+
+HR or ITSM systems (ServiceNow, Jira automation, ...) can ask for directory changes with an
+API key that has scope `directory:write`; the same rules apply as in the web UI (Jira ticket,
+justification, segregation of duties, approval by people in the producer UI):
+
+```bash
+curl -H "X-API-Key: $KEY" -H "Content-Type: application/json" https://<proxy>/directory/requests   -d '{"via":"ad","kind":"group","op":"add_member","name":"GRP-VPN","member_kind":"user",
+       "member":"E1001","jira_ticket":"IAM-123","reason":"remote work approved by manager"}'
+# 202 {"request_id": 42, "status": "awaiting_approval", "required_approvals": 1}
+curl -H "X-API-Key: $KEY" https://<proxy>/directory/requests/42      # scope directory:read
+```
+
+A batch is `{"items": [...], "jira_ticket", "reason", "label"}`. 422 = not valid, 409 = it would
+break segregation of duties.
+
+## Health, readiness, key rotation
+
+- `GET /health` (API) and `/healthz` (web UIs): the process answers.
+- `GET /readyz` (API and both web UIs): the database answers **and** its schema matches the
+  code (503 otherwise) - for load balancers and orchestrators. No key, no data.
+- **Rotating the zip / receipt signing key** without rejecting anything in between:
+  1. `iam keys signing /config/export-signing-2027` on the producer site.
+  2. Add the new `.pub` to every consumer's `trusted_signing_keys` (keep the old one); check
+     the ids match with `iam keys show <file>` on both sides.
+  3. Point `export.signing_key_file` at the new `.key`; restart the producer service.
+  4. Once the old zips are processed, remove the old `.pub` from the consumers.
+  The same for receipts: `receipts.trusted.<site>` takes a list (old + new). For encryption,
+  list both recipients in `export.encrypt_to` / `encrypt_to`, and both identities in
+  `age_identity_file` (it takes a list) until the switch is done.
+
 ## Deploy (Ansible + Docker + systemd)
 
 ```bash

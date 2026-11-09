@@ -86,3 +86,18 @@ groups:
         expr: max(backend_iam_ad_unacknowledged_alerts{severity="critical"}) > 0
         labels: {severity: critical}
         annotations: {summary: "Membership of a protected AD group (e.g. Domain Admins) changed outside the consumer"}
+
+      - alert: BackendIamApprovalWaitingLong
+        expr: max(backend_iam_approvals_oldest_seconds) > 86400
+        labels: {severity: warning}
+        annotations: {summary: "A directory change has waited over 24 h for approval (producer web: Approvals)"}
+
+      - alert: BackendIamNotificationsDead
+        expr: max(backend_iam_notifications{state="dead"}) > 0
+        labels: {severity: warning}
+        annotations: {summary: "Email / webhook notifications gave up (web: Alerts; check notify.yaml and the targets)"}
+
+      - alert: BackendIamReceiptsMissing
+        expr: max by (site) (backend_iam_receipts_last_seconds) > 86400
+        labels: {severity: warning}
+        annotations: {summary: "No AD receipt from a consumer site for over a day (its consumer service or the share may be down)"}

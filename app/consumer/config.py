@@ -65,7 +65,7 @@ class ConsumerConfig(BaseModel):
     # Reject zips without a valid signature from a trusted key.
     require_signature: bool = False
     # age identity (from `iam keys age`) to open .zip.age files.
-    age_identity_file: str | None = None
+    age_identity_file: str | list[str] | None = None   # several during a key rotation
     # Reject zips that were not encrypted.
     require_encryption: bool = False
     # Accept only these domains (empty: all).

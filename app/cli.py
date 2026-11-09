@@ -298,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
     ks = s.add_subparsers(dest="keys_cmd", required=True)
     k = ks.add_parser("signing", help="Ed25519 pair: PREFIX.key (producer) and PREFIX.pub (consumers)")
     k.add_argument("prefix", help="e.g. keys/export-signing")
+    k = ks.add_parser("show", help="key id of a signing key (.key / .pub) or an age identity: check before trusting it")
+    k.add_argument("file")
     k = ks.add_parser("age", help="age identity for a consumer site; prints its recipient")
     k.add_argument("file", help="e.g. keys/consumer-b.age")
 
@@ -370,6 +372,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"private key (producer site, export.signing_key_file): {priv}")
             print(f"public key  (consumer sites, trusted_signing_keys):   {pub}")
             print(f"key id: {bundlesec.key_id(bundlesec.load_public_key(str(pub)))}")
+        elif args.keys_cmd == "show":
+            # Never prints secret material: only the id / public recipient to compare between sites.
+            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+            if "AGE-SECRET-KEY" in text:
+                for ident in bundlesec.load_identities(args.file):
+                    print(f"age identity -> recipient {ident.to_public()}")
+            elif "PRIVATE KEY" in text:
+                key = bundlesec.load_signing_key(args.file)
+                print(f"signing key (private) -> key id {bundlesec.key_id(key.public_key())}")
+            else:
+                print(f"signing key (public) -> key id {bundlesec.key_id(bundlesec.load_public_key(args.file))}")
         else:
             recipient = bundlesec.generate_age_identity(Path(args.file))
             print(f"identity  (consumer site, age_identity_file): {args.file}")

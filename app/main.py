@@ -355,6 +355,15 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/readyz")
+async def readyz(request: Request):
+    """Ready = the database answers and its schema matches this code (for load balancers /
+    orchestrators). Shows no data and needs no key."""
+    from fastapi.responses import JSONResponse
+    result = await asyncio.to_thread(request.app.state.db.readiness)
+    return JSONResponse(result, status_code=200 if result["ready"] else 503)
+
+
 @app.get("/openiam/ping", dependencies=[require("openiam:raw")])
 async def ping(client: Client) -> dict[str, Any]:
     """Check that this backend can obtain an OpenIAM token."""
@@ -472,6 +481,90 @@ async def producer_events(events: ProducerEvent | list[ProducerEvent], producer:
         with suppress(SyncBusy):  # a running cycle delivers them anyway
             await sync.deliver()
     return results
+
+
+# ---- directory requests (HR / ITSM systems) ---------------------------------------------
+# The same rules as the web UI: Jira ticket + justification, segregation of duties, and
+# approval by people in the producer UI (never by the API key that asked).
+
+def _errors(e: Exception) -> list[str]:
+    from pydantic import ValidationError
+    if isinstance(e, ValidationError):
+        return [err["msg"].removeprefix("Value error, ") for err in e.errors()]
+    return [str(e)]
+
+
+@app.post("/directory/requests", status_code=202)
+async def directory_request_api(body: dict[str, Any], request: Request, settings: Cfg,
+                                principal: Annotated[Principal, require("directory:write")]) -> dict[str, Any]:
+    """One change (DirectoryRequest fields) or a batch: {"items": [...], "jira_ticket", "reason",
+    "label"}. Answers 202 with the request id; it runs only after approval."""
+    from .directory import DirectoryRequest
+    from .governance import Governance
+    from .notify import emit
+    db, who = request.app.state.db, f"api:{principal.name}"
+    common = {"requested_by": who}
+    try:
+        if "items" in body:
+            items = body.get("items")
+            if not isinstance(items, list) or not items or len(items) > settings.bulk_max_rows:
+                raise ValueError(f"items: 1 to {settings.bulk_max_rows} changes")
+            shared = {"jira_ticket": body.get("jira_ticket"), "reason": body.get("reason")}
+            reqs = [DirectoryRequest.model_validate({**i, **shared, **common}) for i in items]
+            rows = []
+            for r in reqs:
+                row = r.model_dump(exclude_none=True, exclude_defaults=True)
+                row.update(via=r.via, kind=r.kind, op=r.op)
+                for k in ("jira_ticket", "reason", "requested_by"):
+                    row.pop(k, None)
+                rows.append(row)
+            label = str(body.get("label") or "API batch")[:100]
+            params = {"items": rows, "label": label, "jira_ticket": reqs[0].jira_ticket,
+                      "reason": reqs[0].reason, "requested_by": who}
+            action, what = "directory_batch", f"{label} ({len(rows)} changes)"
+        else:
+            req = DirectoryRequest.model_validate({**body, **common})
+            params = req.model_dump(exclude_none=True, exclude_defaults=True)
+            params.update(via=req.via, kind=req.kind, op=req.op)
+            action, what = "directory", f"{req.op} {req.kind} {req.name}"
+    except Exception as e:
+        raise HTTPException(422, {"errors": _errors(e)}) from None
+    if broken := Governance(db).check_request(params):
+        request.app.state.audit.record("api", who, "sod.blocked", ok=False, ip=request.state.client_ip,
+                                       target=what, detail="; ".join(broken))
+        emit(db, "sod.blocked", f"Refused (segregation of duties): {what}", f"{params['jira_ticket']}: {who}. "
+             + "; ".join(broken), {"jira_ticket": params["jira_ticket"], "policies": broken})
+        raise HTTPException(409, {"errors": ["segregation of duties would be broken"], "policies": broken})
+    reqs_store = OperatorRequests(db)
+    rid = reqs_store.create("producer", action, params, who, destructive_approvals=settings.approvals_for_destructive,
+                            bulk_over=settings.bulk_dual_approval_over)
+    emit(db, "request.awaiting_approval", f"Approval needed: {what}",
+         f"Request {rid} ({params['jira_ticket']}) by {who}.\nJustification: {params['reason']}",
+         {"request_id": rid, "jira_ticket": params["jira_ticket"]})
+    request.app.state.audit.record("api", who, "directory.request", ok=True, ip=request.state.client_ip,
+                                   target=what, detail=f"request {rid} [{params['jira_ticket']}]")
+    created = reqs_store.get(rid)
+    return {"request_id": rid, "status": created["status"], "required_approvals": created["required_approvals"]}
+
+
+@app.get("/directory/requests/{request_id}", dependencies=[require("directory:read")])
+async def directory_request_status(request_id: int, request: Request) -> dict[str, Any]:
+    """Where a change is: waiting / approved / done / failed / rejected, who approved, what
+    OpenIAM and AD did (receipts from the consumer sites)."""
+    from .receipts import ReceiptStore, summarize_ad
+    db = request.app.state.db
+    r = OperatorRequests(db).get(request_id)
+    if r is None or not r["action"].startswith("directory"):
+        raise HTTPException(404, "no such directory request")
+    result = r["result"] or {}
+    ids = result.get("instruction_ids") or []
+    return {"request_id": r["id"], "action": r["action"], "status": r["status"], "requested_by": r["requested_by"],
+            "jira_ticket": (r["params"] or {}).get("jira_ticket"),
+            "approvals": [{"by": a["by"], "at": a["at"]} for a in r["approvals"] or []],
+            "required_approvals": r["required_approvals"], "decided_by": r["decided_by"],
+            "jira": ((r["checks"] or {}).get("jira") or {}).get("status"),
+            "result": {k: result.get(k) for k in ("actions", "warnings", "error", "ok", "failed") if k in result},
+            "ad": summarize_ad(ids, ReceiptStore(db).for_instructions(ids)) if ids else None}
 
 
 @app.get("/producer/people/{employee_id}", dependencies=[require("producer:read")])

@@ -112,6 +112,31 @@ class DbCollector:
                 al.severity == sev, al.acknowledged_at.is_(None))).scalar() or 0)
         yield ad_alerts
 
+        r = t.operator_requests.c
+        waiting = conn.execute(select(func.count(), func.min(r.at)).where(r.status == "awaiting_approval")).one()
+        yield GaugeMetricFamily("backend_iam_approvals_waiting", "Directory changes waiting for approval",
+                                value=waiting[0] or 0)
+        yield GaugeMetricFamily("backend_iam_approvals_oldest_seconds", "Age of the oldest change waiting for approval",
+                                value=(now - waiting[1]) if waiting[1] else 0)
+        n = t.notifications.c
+        notes = GaugeMetricFamily("backend_iam_notifications", "Email / webhook notifications by state",
+                                  labels=["state"])
+        for state in ("pending", "sent", "dead"):
+            notes.add_metric([state], conn.execute(select(func.count()).where(n.status == state)).scalar() or 0)
+        yield notes
+        rc = t.ad_receipts.c
+        last = GaugeMetricFamily("backend_iam_receipts_last_seconds",
+                                 "Seconds since the last AD receipt from each consumer site", labels=["site"])
+        for site, at in conn.execute(select(rc.site, func.max(rc.received_at)).group_by(rc.site)):
+            last.add_metric([site], now - at)
+        yield last
+        yield GaugeMetricFamily("backend_iam_receipts_unsent", "Receipts this consumer site has not written yet",
+                                value=conn.execute(select(func.count()).where(
+                                    t.consumer_receipts.c.status == "pending")).scalar() or 0)
+        yield GaugeMetricFamily("backend_iam_time_limited_access_active", "Memberships that end on a date",
+                                value=conn.execute(select(func.count()).where(
+                                    t.timed_grants.c.status == "active")).scalar() or 0)
+
         u = t.web_users.c
         yield GaugeMetricFamily("backend_iam_web_users_locked", "Web users currently locked out",
                                 value=conn.execute(select(func.count()).where(u.locked_until > now)).scalar() or 0)

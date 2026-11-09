@@ -97,6 +97,24 @@ class Database:
             os.close(fd)
             lock.unlink(missing_ok=True)
 
+    @staticmethod
+    def head_revision() -> str:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        cfg = Config()
+        cfg.set_main_option("script_location", str(MIGRATIONS))
+        return ScriptDirectory.from_config(cfg).get_current_head()
+
+    def readiness(self) -> dict:
+        """{"ready": bool, "database": ..., "schema": ...}: safe to show (no secrets, no data)."""
+        try:
+            current = self.schema_version()
+        except Exception as e:
+            return {"ready": False, "database": f"unreachable ({type(e).__name__})", "schema": None}
+        head = self.head_revision()
+        return {"ready": current == head, "database": "ok",
+                "schema": "current" if current == head else f"{current or 'none'} (code needs {head})"}
+
     def schema_version(self) -> str | None:
         with self.engine.connect() as conn:
             if not inspect(conn).has_table("alembic_version", schema=self.schema):

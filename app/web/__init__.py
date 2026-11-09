@@ -148,7 +148,7 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
     @app.before_request
     def _gate():
         g.user = None
-        if request.path in ("/healthz", "/favicon.ico") or (
+        if request.path in ("/healthz", "/readyz", "/favicon.ico") or (
                 request.method == "GET" and request.path.startswith("/static/")):
             return None
         if request.method == "POST":
@@ -244,6 +244,11 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
     @app.get("/healthz")
     def healthz():
         return "ok"
+
+    @app.get("/readyz")
+    def readyz():
+        result = db.readiness()
+        return Response(json.dumps(result), status=200 if result["ready"] else 503, mimetype="application/json")
 
     @app.get("/favicon.ico")
     def favicon():

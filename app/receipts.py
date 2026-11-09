@@ -61,17 +61,28 @@ class ReceiptWriterConfig(BaseModel):
 class ReceiptImportConfig(BaseModel):
     """Producer side (sync.yaml `receipts:`)."""
     folder: str
-    trusted: dict[str, str] = Field(default_factory=dict)   # site -> its .pub signing key
+    # site -> its .pub signing key, or several during a key rotation (old + new).
+    trusted: dict[str, str | list[str]] = Field(default_factory=dict)
     require_signature: bool = True
-    age_identity_file: str | None = None
+    age_identity_file: str | list[str] | None = None   # several during a rotation
     require_encryption: bool = False
 
     @field_validator("trusted")
     @classmethod
-    def _sites(cls, v: dict[str, str]) -> dict[str, str]:
+    def _sites(cls, v: dict[str, str | list[str]]) -> dict[str, str | list[str]]:
         for site in v:
             _site(site)
         return v
+
+
+def load_all_identities(paths: str | list[str] | None):
+    """age identities from one file or several (old + new during a key rotation)."""
+    if not paths:
+        return None
+    out = []
+    for p in [paths] if isinstance(paths, str) else paths:
+        out.extend(bundlesec.load_identities(p))
+    return out
 
 
 def _canonical(receipt: dict[str, Any]) -> bytes:
@@ -255,8 +266,9 @@ def import_receipts(db: Database, cfg: ReceiptImportConfig) -> dict[str, Any]:
     folder = Path(cfg.folder)
     if not folder.is_dir():
         raise ReceiptError(f"receipts folder {folder} does not exist or is not reachable")
-    trusted = {site: bundlesec.load_public_key(p) for site, p in cfg.trusted.items()}
-    identities = bundlesec.load_identities(cfg.age_identity_file) if cfg.age_identity_file else None
+    trusted = {site: [bundlesec.load_public_key(x) for x in ([p] if isinstance(p, str) else p)]
+               for site, p in cfg.trusted.items()}
+    identities = load_all_identities(cfg.age_identity_file)
     store, notes = ReceiptStore(db), Notifications(db)
     counts = {"imported": 0, "duplicate": 0, "rejected": 0}
     for path in sorted(folder.glob("receipt-*.json*")):
@@ -303,7 +315,7 @@ def _read(path: Path, trusted: dict, identities, cfg: ReceiptImportConfig) -> tu
     if site in trusted:
         # Only the key trusted for THIS site counts: one site cannot speak for another.
         bundlesec.verify(_canonical(receipt), (env.get("signature") or "").encode() or None,
-                         {site: trusted[site]})
+                         {f"{site}#{i}": k for i, k in enumerate(trusted[site])})
         signed_by = site
     elif cfg.require_signature:
         raise ReceiptError(f"no trusted key for site {site!r}")

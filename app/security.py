@@ -29,6 +29,8 @@ SCOPES = {
     "sync:run": "run sync / deliver / export / retry dead",
     "openiam:raw": "raw OpenIAM calls, api-docs, ping",
     "metrics:read": "GET /metrics",
+    "directory:write": "POST /directory/requests (ask for directory changes; they still need approval)",
+    "directory:read": "GET /directory/requests/{id} (status, approvals, what AD did)",
     "admin": "everything",
 }
 KEY_PREFIX = "biam"
