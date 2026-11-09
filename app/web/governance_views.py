@@ -79,7 +79,7 @@ def register(app: Flask) -> None:
         return redirect(f"/governance/campaigns/{cid}")
 
     @app.get("/governance/campaigns/<int:campaign_id>")
-    @require_role("operator")
+    @require_role("operator|auditor")
     def campaign_view(campaign_id: int):
         c = gov.campaign(campaign_id) or abort(404)
         return render_template("p_campaign.html", c=c, items=gov.items(campaign_id))
@@ -140,7 +140,7 @@ def register(app: Flask) -> None:
     # ---- notifications -----------------------------------------------------------------
 
     @app.get("/admin/notifications")
-    @require_role("admin")
+    @require_role("admin|auditor")
     def notifications_page():
         from ..notify import EVENTS
         return render_template("p_notifications.html", rows=notes.recent(200), events=EVENTS)
@@ -148,13 +148,13 @@ def register(app: Flask) -> None:
     # ---- reports -------------------------------------------------------------------
 
     @app.get("/reports")
-    @require_role("operator")
+    @require_role("operator|auditor")
     def reports():
         return render_template("p_reports.html", reports=REPORTS, schedules=ext["report_schedules"].list(),
                                every=ext["schedule_every"], folder=ext["settings"].reports_folder)
 
     @app.get("/reports/<name>.csv")
-    @require_role("operator")
+    @require_role("operator|auditor")
     def report_download(name: str):
         if name not in REPORTS:
             abort(404)

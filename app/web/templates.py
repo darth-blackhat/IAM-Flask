@@ -112,7 +112,7 @@ instead of an authenticator code.</p>
 ADMIN_USERS = """{% extends "base.html" %}{% block title %}Users{% endblock %}{% block body %}
 <h1>Web users</h1>
 <div class="wrap"><table><tr><th>User</th><th>Role</th><th>State</th><th>MFA</th><th>Approves</th><th>Employee</th><th>Last sign-in</th><th>Actions</th></tr>
-{% for u in users %}<tr><td>{{ u.username }}</td>
+{% for u in users %}<tr><td>{{ u.username }}{% if u.auth_source == 'ldap' %} <span class="chip" title="{{ u.external_dn }}">AD</span>{% endif %}</td>
 <td><form class="inline" method="post" action="/admin/users/{{ u.username|urlencode }}/role">{{ csrf() }}
 <select name="role">{% for r in roles %}<option {{ 'selected' if r == u.role }}>{{ r }}</option>{% endfor %}</select>
 <button>set</button></form></td>
@@ -130,8 +130,9 @@ ADMIN_USERS = """{% extends "base.html" %}{% block title %}Users{% endblock %}{%
 <form class="inline" method="post" action="/admin/users/{{ u.username|urlencode }}/{{ 'enable' if u.disabled else 'disable' }}">{{ csrf() }}<button class="{{ '' if u.disabled else 'danger' }}">{{ 'enable' if u.disabled else 'disable' }}</button></form>
 {% endif %}
 <form class="inline" method="post" action="/admin/users/{{ u.username|urlencode }}/unlock">{{ csrf() }}<button>unlock</button></form>
-<form class="inline" method="post" action="/admin/users/{{ u.username|urlencode }}/password">{{ csrf() }}
+{% if u.auth_source != 'ldap' %}<form class="inline" method="post" action="/admin/users/{{ u.username|urlencode }}/password">{{ csrf() }}
 <input name="password" type="password" placeholder="new password" autocomplete="new-password" required><button>reset</button></form>
+{% else %}<span class="muted small">role from AD groups at each sign-in</span>{% endif %}
 </td></tr>{% endfor %}</table></div>
 <h2>Add user</h2>
 <form method="post" action="/admin/users" class="row">{{ csrf() }}
@@ -139,7 +140,8 @@ ADMIN_USERS = """{% extends "base.html" %}{% block title %}Users{% endblock %}{%
 <input name="password" type="password" placeholder="password (12+ characters)" autocomplete="new-password" required>
 <select name="role">{% for r in roles %}<option>{{ r }}</option>{% endfor %}</select>
 <button class="primary">Add</button></form>
-<p class="muted">viewer: read only · operator: also run actions · admin: also users{{ ' and API keys' if site == 'producer' }}.
+<p class="muted">viewer: read only · auditor: also reads the audit trail, approvals, reports and alerts, changes nothing ·
+operator: also run actions · admin: also users{{ ' and API keys' if site == 'producer' }}.
 {% if site == 'producer' %}Approves: comma-separated domains / organizations an admin may approve changes for (empty: all).{% endif %}</p>
 {% endblock %}"""
 
@@ -649,7 +651,8 @@ consumer site still applies AD changes according to its own mode (dry run / appr
 <div class="muted">approvals {{ (r.approvals or [])|length }} of {{ r.required_approvals or 1 }}{% for a in r.approvals or [] %} · {{ a.by }}{% endfor %}</div>
 {% if r.requested_by == me %}<span class="muted">your request: someone else must decide</span>
 {% elif not r.mine %}<span class="muted">outside your approval scope ({{ scope|join(', ') }})</span>
-{% elif r.approved_by_me %}<span class="muted">you approved; waiting for another approver</span>{% else %}
+{% elif r.approved_by_me %}<span class="muted">you approved; waiting for another approver</span>
+{% elif not can('admin') %}<span class="muted">waiting for an approver</span>{% else %}
 <form method="post" action="/approvals/{{ r.id }}/approve" class="row">{{ csrf() }}<input name="note" placeholder="note"><button class="primary" data-confirm="Approve? It will be written to OpenIAM and/or sent to AD.">approve</button></form>
 <form method="post" action="/approvals/{{ r.id }}/reject" class="row">{{ csrf() }}<input name="note" placeholder="why not"><button class="danger" data-confirm="Reject this request?">reject</button></form>{% endif %}</td></tr>
 {% else %}<tr><td colspan="5" class="ok">Nothing waiting.</td></tr>{% endfor %}</table></div>
@@ -728,7 +731,7 @@ P_CAMPAIGN = """{% extends "base.html" %}{% block title %}Campaign {{ c.name }}{
 <td>{{ i.kind }}</td><td class="mono">{{ i.object_name }}</td><td class="muted">{{ i.source }}</td>
 <td>{% if i.decision %}<span class="{{ 'ok' if i.decision == 'certify' else 'warn' }}">{{ i.decision }}</span>
 <div class="muted">{{ i.decided_by }} {{ i.decided_at|ts }}{% if i.request_id %} · request {{ i.request_id }}{% endif %}</div>{% if i.note %}<div>{{ i.note }}</div>{% endif %}
-{% elif c.status == 'open' %}<form class="row" method="post" action="/governance/items/{{ i.id }}/certify">{{ csrf() }}
+{% elif c.status == 'open' and can('operator') %}<form class="row" method="post" action="/governance/items/{{ i.id }}/certify">{{ csrf() }}
 <input name="note" placeholder="note (revoke: justification, 10+ characters)" maxlength="1000">
 <input name="jira_ticket" placeholder="Jira ticket (revoke)" maxlength="20" pattern="[A-Za-z][A-Za-z0-9_]{1,9}-[1-9][0-9]{0,8}" title="Jira issue key, e.g. IAM-123">
 <button class="primary">certify</button>

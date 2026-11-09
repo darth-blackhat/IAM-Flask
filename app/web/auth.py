@@ -11,8 +11,22 @@ from sqlalchemy import insert, select, update
 
 from ..db import Database
 
-ROLES = ("viewer", "operator", "admin")
+# auditor: reads what admins read (audit trail, approvals, reports, alerts) but changes
+# nothing. It is not "above" operator: pages grant it explicitly ("admin|auditor").
+ROLES = ("viewer", "auditor", "operator", "admin")
 RANK = {r: i for i, r in enumerate(ROLES)}
+
+
+def allowed(role: str, spec: str) -> bool:
+    """spec: "operator" (that role or higher) or alternatives "admin|auditor". The auditor
+    alternative matches only auditors, so an operator never reads auditor-only pages."""
+    for want in spec.split("|"):
+        if want == "auditor":
+            if role == "auditor":
+                return True
+        elif RANK[role] >= RANK[want] and role != "auditor":
+            return True
+    return False
 MIN_PASSWORD = 12
 # Never shown or listed.
 SECRET_COLUMNS = ("password_hash", "totp_secret", "recovery_codes", "totp_last_counter")
@@ -96,6 +110,8 @@ class WebUserStore:
         user = self.get(username)
         if not user:
             raise ValueError("no such user")
+        if (user.get("auth_source") or "local") != "local":
+            raise ValueError("this account signs in through AD: its password is managed there")
         # New password: every existing session of this user ends.
         self._set(username, password_hash=hash_password(password), password_changed_at=time.time(),
                   session_epoch=user["session_epoch"] + 1, failed_logins=0, locked_until=None)
@@ -158,12 +174,40 @@ class WebUserStore:
             raise ValueError("invalid scope entry")
         return self._set(username, approver_scope=clean)
 
+    def upsert_external(self, username: str, role: str, source: str, dn: str | None) -> tuple[dict | None, str]:
+        """Shadow record of an AD account: role from AD groups (refreshed at every sign-in),
+        no usable password, own MFA / disable flag. A local account with the same name is
+        never taken over."""
+        if role not in ROLES:
+            return None, "unknown role"
+        user = self.get(username)
+        now = time.time()
+        if user is None:
+            with self.db.begin() as conn:
+                conn.execute(insert(self.t).values(
+                    username=username, password_hash="!external", role=role, disabled=False, failed_logins=0,
+                    session_epoch=0, created_at=now, password_changed_at=now, auth_source=source,
+                    external_dn=dn, last_login_at=now))
+            return self.get(username), ""
+        if (user.get("auth_source") or "local") != source:
+            return None, f"name taken by a {user.get('auth_source') or 'local'} account"
+        if user["disabled"]:
+            return None, "disabled"
+        changes: dict[str, Any] = {"last_login_at": now, "external_dn": dn, "failed_logins": 0, "locked_until": None}
+        if user["role"] != role:
+            changes.update(role=role, session_epoch=user["session_epoch"] + 1)   # role changed in AD
+        self._set(username, **changes)
+        return self.get(username), ""
+
     def authenticate(self, username: str, password: str) -> tuple[dict | None, str]:
         """(user, "") or (None, reason). Reasons are for the audit trail, not the screen."""
         user = self.get(username)
         if user is None:
             check_password(password, _DUMMY)
             return None, "unknown user"
+        if (user.get("auth_source") or "local") != "local":
+            check_password(password, _DUMMY)
+            return None, f"{user['auth_source']} account: sign in through it"
         if user["locked_until"] and user["locked_until"] > time.time():
             return None, "locked"
         if not check_password(password, user["password_hash"]):

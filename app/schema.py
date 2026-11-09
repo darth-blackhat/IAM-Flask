@@ -167,7 +167,9 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("totp_last_counter", BigInteger),     # last accepted time step (no replay)
         Column("recovery_codes", JsonType),          # sha256 of unused one-time codes
         Column("approver_scope", JsonType),          # domains / OUs this admin may approve; null = all
-        Column("employee_id", String(255)))          # self-service: this web user is that employee
+        Column("employee_id", String(255)),          # self-service: this web user is that employee
+        Column("auth_source", String(20)),           # null/local | ldap
+        Column("external_dn", String(1000)))         # the AD account (ldap)
     t.audit_trail = Table(
         "audit_trail", m,
         Column("id", IdType, primary_key=True, autoincrement=True),

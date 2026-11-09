@@ -57,6 +57,21 @@ class Settings(BaseSettings):
     # Users of this role or above must set up MFA (TOTP) before using the web UI:
     # viewer | operator | admin. Empty: optional for everyone.
     web_mfa_required_role: str = ""
+    # Sign-in: local (web users' own passwords) | ldap (AD only) | both (AD, then local as
+    # break-glass). LDAP is read-only: bind + search. See app/web/ldap_auth.py.
+    web_auth_mode: str = "local"
+    web_ldap_urls: str = ""                  # ldaps://dc1.corp.example:636,ldaps://dc2.corp.example:636
+    web_ldap_starttls: bool = False          # ldap:// + StartTLS instead of ldaps://
+    web_ldap_ca_file: str = ""               # CA that signed the DCs' certificates
+    web_ldap_bind_dn: str = ""               # read-only service account
+    web_ldap_bind_password: SecretStr = SecretStr("")
+    web_ldap_base_dn: str = ""
+    web_ldap_user_filter: str = "(&(objectCategory=person)(objectClass=user)(sAMAccountName={username}))"
+    web_ldap_group_admin: str = ""           # group DN(s), ";"-separated
+    web_ldap_group_operator: str = ""
+    web_ldap_group_auditor: str = ""
+    web_ldap_group_viewer: str = ""
+    web_ldap_timeout: int = 10
     # Approvals needed for destructive directory changes (delete / offboard); others need 1.
     approvals_for_destructive: int = 2
     # Jira (producer service only): off | warn | enforce. See app/jira.py.

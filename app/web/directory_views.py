@@ -421,7 +421,7 @@ def register(app: Flask) -> None:
     # ---- approval (four eyes) ------------------------------------------------
 
     @app.get("/approvals")
-    @require_role("admin")
+    @require_role("admin|auditor")
     def approvals():
         rows = [r for r in requests.page("producer", 500) if r["action"].startswith("directory")]
         waiting = sorted((r for r in rows if r["status"] == "awaiting_approval"), key=lambda r: r["id"])

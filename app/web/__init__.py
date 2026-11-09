@@ -30,7 +30,7 @@ from ..config import Settings
 from ..db import Database
 from ..logs import logger
 from ..security import AuditTrail, client_ip, parse_networks
-from .auth import RANK, ROLES, WebUserStore
+from .auth import RANK, ROLES, WebUserStore, allowed
 from .mfa import (MfaError, hash_recovery, new_recovery_codes, new_secret, otpauth_uri,
                   seal, unseal)
 from .mfa import verify as verify_totp
@@ -128,9 +128,10 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
         need = settings.web_mfa_required_role
         return need in RANK and RANK[user["role"]] >= RANK[need]
 
-    def can(min_role: str) -> bool:
+    def can(spec: str) -> bool:
+        """spec: "operator" (or higher) or alternatives like "admin|auditor"."""
         user = getattr(g, "user", None)
-        return bool(user) and RANK[user["role"]] >= RANK[min_role]
+        return bool(user) and allowed(user["role"], spec)
 
     @app.context_processor
     def _ctx():
@@ -260,7 +261,7 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
             record("login", ok=False, actor=name or "?", detail="too many attempts from this address")
             flash("Too many attempts. Wait a few minutes.", "error")
             return render_template("login.html", next=nxt), 429
-        user, reason = users.authenticate(name, request.form.get("password") or "")
+        user, reason = _check_credentials(name, request.form.get("password") or "")
         if user is None:
             record("login", ok=False, actor=name or "?", detail=reason)
             flash("Invalid username or password.", "error")   # same text whatever the reason
@@ -274,6 +275,35 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
             return redirect(url_for("login_mfa"))
         return _finish_login(user, nxt)
 
+    mode = (settings.web_auth_mode or "local").lower()
+    if mode not in ("local", "ldap", "both"):
+        raise ValueError("WEB_AUTH_MODE must be local, ldap or both")
+    ldap = None
+    if mode in ("ldap", "both"):
+        from .ldap_auth import LdapAuth
+        ldap = app.extensions["biam"].get("ldap_auth") or LdapAuth(settings)
+
+    def _check_credentials(name: str, password: str) -> tuple[dict | None, str]:
+        """AD and / or local, per WEB_AUTH_MODE. Reasons go to the audit trail only."""
+        reasons = []
+        if ldap is not None:
+            from .ldap_auth import LdapUnavailable
+            try:
+                info, reason = ldap.authenticate(name, password)
+            except LdapUnavailable as e:
+                info, reason = None, str(e)
+                logger.warning("LDAP sign-in unavailable: {}", e)
+            if info:
+                user, why = users.upsert_external(info["username"], info["role"], "ldap", info["dn"])
+                if user:
+                    return user, ""
+                reason = why
+            reasons.append(f"AD: {reason}")
+            if mode == "ldap":
+                return None, "; ".join(reasons)
+        user, reason = users.authenticate(name, password)
+        return (user, "") if user else (None, "; ".join(reasons + [f"local: {reason}"]))
+
     def _finish_login(user: dict, nxt: str, mfa: bool = False):
         session.clear()   # new session id material: no fixation
         now = time.time()
@@ -281,7 +311,8 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
                        csrf=secrets.token_urlsafe(32), mfa=mfa)
         session.permanent = True
         g.user = user
-        record("login", detail="with MFA" if mfa else None)
+        via = "AD" if (user.get("auth_source") or "local") == "ldap" else "local"
+        record("login", detail=f"via {via}" + (" with MFA" if mfa else ""))
         return redirect(nxt)
 
     @app.route("/login/mfa", methods=["GET", "POST"])
@@ -513,7 +544,7 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
         return redirect("/admin/users")
 
     @app.post("/admin/audit/verify")
-    @require_role("admin")
+    @require_role("admin|auditor")
     def admin_audit_verify():
         result = audit.verify()
         record("audit.verify", ok=result["ok"], detail=str(result))
@@ -523,7 +554,7 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
         return redirect("/admin/audit")
 
     @app.get("/admin/audit")
-    @require_role("admin")
+    @require_role("admin|auditor")
     def admin_audit():
         before = request.args.get("before", "")
         rows = audit.page(actor=request.args.get("actor") or None,
@@ -534,7 +565,7 @@ def create_app(settings: Settings, db: Database | None = None, site: str = "prod
                                next_before=rows[-1]["id"] if len(rows) == PAGE * 2 else None)
 
     @app.get("/requests")
-    @require_role("operator")
+    @require_role("operator|auditor")
     def requests_page():
         from ..operator import OperatorRequests
         return render_template("requests.html", rows=OperatorRequests(db).page(site),
@@ -558,17 +589,17 @@ NAV = {
     "producer": [("/", "Dashboard", "viewer"), ("/producer", "Producer activity", "viewer"),
                  ("/directory", "Directory", "viewer"), ("/governance", "Governance", "viewer"),
                  ("/governance/insights", "Insights", "viewer"), ("/request-access", "Request access", "viewer"),
-                 ("/reports", "Reports", "operator"), ("/outbox", "AD instructions", "viewer"),
+                 ("/reports", "Reports", "operator|auditor"), ("/outbox", "AD instructions", "viewer"),
                  ("/runs", "Sync runs", "viewer"),
-                 ("/requests", "Requests", "operator"), ("/approvals", "Approvals", "admin"),
-                 ("/admin/notifications", "Alerts", "admin"),
+                 ("/requests", "Requests", "operator|auditor"), ("/approvals", "Approvals", "admin|auditor"),
+                 ("/admin/notifications", "Alerts", "admin|auditor"),
                  ("/receipts", "AD receipts", "viewer"),
                  ("/admin/apikeys", "API keys", "admin"),
-                 ("/admin/users", "Users", "admin"), ("/admin/audit", "Audit", "admin")],
+                 ("/admin/users", "Users", "admin"), ("/admin/audit", "Audit", "admin|auditor")],
     "consumer": [("/", "Dashboard", "viewer"), ("/files", "Files", "viewer"),
                  ("/actions", "Actions", "viewer"), ("/ad/plans", "AD plans", "viewer"),
-                 ("/ad/changes", "AD changes", "viewer"), ("/drift", "Drift", "viewer"), ("/requests", "Requests", "operator"),
-                 ("/admin/users", "Users", "admin"), ("/admin/audit", "Audit", "admin")],
+                 ("/ad/changes", "AD changes", "viewer"), ("/drift", "Drift", "viewer"), ("/requests", "Requests", "operator|auditor"),
+                 ("/admin/users", "Users", "admin"), ("/admin/audit", "Audit", "admin|auditor")],
 }
 
 
