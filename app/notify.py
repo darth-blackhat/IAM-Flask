@@ -47,6 +47,7 @@ EVENTS = {
     "access.expired": "Time-limited access ended and was removed",
     "audit.tampered": "The audit trail's hash chain is broken",
     "report.scheduled": "A scheduled report was written",
+    "ad.failed": "A consumer site reported AD instructions that failed",
 }
 MAX_ATTEMPTS = 10
 PRESETS = {

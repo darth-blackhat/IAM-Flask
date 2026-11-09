@@ -27,6 +27,7 @@ ACTIONS = {
         "deliver": "Deliver pending instructions now",
         "directory": "Change a user, group, organization or role",
         "directory_batch": "Several directory changes approved together (bulk import, mover)",
+        "receipts_import": "Import AD receipts from the consumer sites now",
     },
     "consumer": {
         "scan": "Scan the inbox now",

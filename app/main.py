@@ -31,6 +31,7 @@ from .service import inject_user, inject_users
 from .directory import DirectoryService
 from .jira import Jira
 from .notify import Notifier, load_notify_config
+from .receipts import import_receipts
 from .db import Database
 from .sync import (MassDeleteError, Store, SyncBusy, SyncError, SyncService, build_target,
                    load_config)
@@ -123,13 +124,21 @@ async def lifespan(app: FastAPI):
         # The web UI's user / group / organization / role pages.
         handlers.update(DirectoryService(app.state.openiam, producer=app.state.producer,
                                          sync=app.state.sync, jira=Jira(settings), db=db).operator_handlers())
+    if app.state.sync is not None and app.state.sync.cfg.receipts is not None:
+        receipt_cfg = app.state.sync.cfg.receipts
+
+        async def receipts_import(_: dict) -> dict:
+            return await asyncio.to_thread(import_receipts, db, receipt_cfg)
+        handlers["receipts_import"] = receipts_import
     if handlers and settings.operator_poll_seconds > 0:
         tasks.append(asyncio.create_task(_operator_loop(
             OperatorRequests(db), "producer", handlers, settings.operator_poll_seconds)))
     notify_cfg = load_notify_config(settings.notify_config_path)
     if notify_cfg is not None and settings.notify_poll_seconds > 0:
         tasks.append(asyncio.create_task(_notify_loop(Notifier(db, notify_cfg), settings.notify_poll_seconds)))
-    tasks.append(asyncio.create_task(_watch_loop(db, reports_folder=settings.reports_folder)))
+    tasks.append(asyncio.create_task(_watch_loop(
+        db, reports_folder=settings.reports_folder,
+        receipts=app.state.sync.cfg.receipts if app.state.sync is not None else None)))
     logger.info("backend-iam started: openiam={} sync={} producer={} scheduler={}",
                 settings.openiam_base_url, app.state.sync is not None,
                 app.state.producer is not None, settings.sync_schedule)
@@ -173,7 +182,8 @@ async def _notify_loop(notifier: Notifier, every: float) -> None:
         await asyncio.sleep(every)
 
 
-async def _watch_loop(db: Database, every: float = 300.0, reports_folder: str = "data/reports") -> None:
+async def _watch_loop(db: Database, every: float = 300.0, reports_folder: str = "data/reports",
+                      receipts: Any = None) -> None:
     """Every 5 minutes: end expired time-limited access. Hourly: alert on a broken audit
     chain and on overdue access reviews."""
     from .directory import expire_grants
@@ -189,6 +199,15 @@ async def _watch_loop(db: Database, every: float = 300.0, reports_folder: str = 
             raise
         except Exception:
             logger.exception("access expiry")
+        if receipts is not None:
+            try:
+                counts = await asyncio.to_thread(import_receipts, db, receipts)
+                if counts["imported"] or counts["rejected"]:
+                    logger.info("AD receipts: {}", counts)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("AD receipts import")
         try:
             from .reports import ReportSchedules
             for path in await asyncio.to_thread(ReportSchedules(db).run_due, reports_folder):

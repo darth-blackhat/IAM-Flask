@@ -94,3 +94,13 @@ directories:
 #     enabled: true
 #     interval_minutes: 10
 #     protected_groups: true # watch their membership anywhere under base_dn (critical)
+
+# Signed receipts back to the producer: what happened to every AD instruction
+# (applied / unchanged / failed / waiting for approval / rejected ...). Written to the
+# share after each zip and whenever a held AD plan is approved or rejected.
+#   iam keys signing /config/receipts-site-b   -> keep .key here, give .pub to the producer
+# receipts:
+#   folder: /data/share/receipts        # a folder the producer site can read
+#   site: site-b                         # this site's name (the producer trusts it by key)
+#   signing_key_file: /config/receipts-site-b.key
+#   encrypt_to: ["age1...producer..."]   # optional: the producer's age recipient

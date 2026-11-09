@@ -62,9 +62,9 @@ def test_postgres_tables_live_in_schema_as_jsonb(database):
 
 
 def test_migrations_reach_head_and_are_idempotent(database):
-    assert database.schema_version() == "0011"
+    assert database.schema_version() == "0012"
     database.migrate()  # every service start runs it again
-    assert database.schema_version() == "0011"
+    assert database.schema_version() == "0012"
     names = {t for t in database.metadata.tables}
     with database.engine.connect() as conn:
         from sqlalchemy import inspect
@@ -81,7 +81,7 @@ def test_database_created_before_migrations_is_adopted(tmp_path):
     with db.engine.begin() as conn:
         conn.execute(db.tables.sync_runs.insert().values(started_at=1.0, status="ok"))
     db.migrate()
-    assert db.schema_version() == "0011"
+    assert db.schema_version() == "0012"
     with db.engine.connect() as conn:
         assert conn.execute(db.tables.sync_runs.select()).first().status == "ok"  # data kept
         conn.execute(db.tables.sync_exports.select()).all()   # missing baseline table added
@@ -122,7 +122,7 @@ def test_concurrent_migrations_of_an_old_database(database, tmp_path):
         t.join()
     assert errors == []
     check = Database(url, schema)
-    assert check.schema_version() == "0011"
+    assert check.schema_version() == "0012"
     name = f'"{schema}".alembic_version' if schema else "alembic_version"
     with check.engine.connect() as conn:
         assert conn.execute(text(f"SELECT count(*) FROM {name}")).scalar() == 1

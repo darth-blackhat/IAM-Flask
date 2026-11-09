@@ -7,7 +7,7 @@ module is the current shape the code works with. When you change it, add a migra
 from types import SimpleNamespace
 
 from sqlalchemy import (JSON, BigInteger, Boolean, Column, Float, Index, Integer, MetaData,
-                        String, Table, Text)
+                        String, Table, Text, UniqueConstraint)
 from sqlalchemy.dialects import postgresql
 
 # JSONB on PostgreSQL so stored records can be queried; plain JSON text on SQLite.
@@ -331,6 +331,41 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("name", String(100), nullable=False),
         Column("path", String(1000), nullable=False),          # a local /directory... URL
         Column("created_at", Float, nullable=False))
+
+    # ---- AD receipts (consumer -> producer) -------------------------------------
+    # Consumer: receipts waiting to be signed and written to the share.
+    t.consumer_receipts = Table(
+        "consumer_receipts", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("at", Float, nullable=False),
+        Column("payload", JsonType, nullable=False),
+        Column("status", String(20), nullable=False),          # pending | written
+        Column("file", Text),
+        Column("written_at", Float),
+        Index("consumer_receipts_pending", "status", "id"))
+    # Producer: receipts received, and the latest status of each instruction per site.
+    t.ad_receipts = Table(
+        "ad_receipts", m,
+        Column("id", IdType, primary_key=True, autoincrement=True),
+        Column("site", String(63), nullable=False),
+        Column("receipt_id", BigInteger, nullable=False),       # the consumer's own number
+        Column("zip_name", String(500)),
+        Column("zip_sha256", String(64)),
+        Column("domain", String(500)),
+        Column("status", String(30), nullable=False),
+        Column("created_at", Float, nullable=False),
+        Column("received_at", Float, nullable=False, index=True),
+        Column("signed_by", String(63)),
+        Column("payload", JsonType, nullable=False),
+        UniqueConstraint("site", "receipt_id", name="ad_receipts_site_receipt"))
+    t.ad_receipt_items = Table(
+        "ad_receipt_items", m,
+        Column("instruction_id", String(64), primary_key=True),
+        Column("site", String(63), primary_key=True),
+        Column("status", String(30), nullable=False),
+        Column("detail", Text),
+        Column("at", Float, nullable=False),
+        Column("receipt", IdType))
     return t
 
 

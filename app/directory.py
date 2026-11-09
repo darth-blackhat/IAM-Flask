@@ -242,6 +242,7 @@ class DirectoryService:
             try:
                 row = await self.handle(req.model_dump(), batch=True)
                 out["rows"].append({"row": i, "ok": True, "name": req.name, "op": req.op, "actions": row["actions"]})
+                out.setdefault("instruction_ids", []).extend(row.get("instruction_ids") or [])
                 out["ok"] += 1
             except Exception as e:
                 out["rows"].append({"row": i, "ok": False, "name": req.name, "op": req.op, "error": str(e)})
@@ -344,6 +345,7 @@ class DirectoryService:
                            reason=f"{req.jira_ticket}: {req.reason}")
         r = await self.producer.process(ev)
         out.update(actions=r.actions, warnings=r.warnings, instructions=len(r.instructions),
+                   instruction_ids=[i["instruction_id"] for i in r.instructions],
                    user_id=r.user_id, producer_event=ev.event_id)
         if not r.ok:
             raise DirectoryError(r.error or "producer event failed")
@@ -502,6 +504,7 @@ class DirectoryService:
         with self.sync.store.connect() as conn:
             self.sync.store.add_events(conn, [event])
         out["instructions"] = len(instructions)
+        out["instruction_ids"] = [i["instruction_id"] for i in instructions]
         out["actions"].append(f"queued {len(instructions)} AD instruction(s)")
 
     async def _deliver(self, instructions: list[dict[str, Any]]) -> None:

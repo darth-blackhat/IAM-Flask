@@ -120,3 +120,14 @@ audit:
     action: action
     result: result
     target_id: targets.targetId
+
+# Receipts from the consumer sites (see consumer.example.yaml `receipts:`): imported
+# every 5 minutes by `iam serve` (or `iam sync receipts`), shown per request in the UI.
+# Each site's receipts must be signed by the key trusted for that site.
+# receipts:
+#   folder: /data/share/receipts
+#   trusted:
+#     site-b: /config/receipts-site-b.pub
+#   require_signature: true
+#   age_identity_file: /config/producer-receipts.age   # if the sites encrypt to you
+#   require_encryption: false

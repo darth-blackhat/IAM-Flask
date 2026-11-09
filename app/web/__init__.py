@@ -562,6 +562,7 @@ NAV = {
                  ("/runs", "Sync runs", "viewer"),
                  ("/requests", "Requests", "operator"), ("/approvals", "Approvals", "admin"),
                  ("/admin/notifications", "Alerts", "admin"),
+                 ("/receipts", "AD receipts", "viewer"),
                  ("/admin/apikeys", "API keys", "admin"),
                  ("/admin/users", "Users", "admin"), ("/admin/audit", "Audit", "admin")],
     "consumer": [("/", "Dashboard", "viewer"), ("/files", "Files", "viewer"),

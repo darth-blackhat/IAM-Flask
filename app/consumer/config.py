@@ -3,6 +3,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from ..receipts import ReceiptWriterConfig
+
 from .ad_target import AdConfig
 
 # Applied in this order so containers exist before the users placed in them.
@@ -78,6 +80,8 @@ class ConsumerConfig(BaseModel):
     instruction_user_keys: dict[str, str] = {"employeeID": "employeeId"}
     directories: dict[Literal["group", "role", "organization"], DirectoryEntity] = Field(
         default_factory=_default_directories)
+    # Signed receipts back to the producer: what happened to each instruction (app/receipts.py).
+    receipts: ReceiptWriterConfig | None = None
 
     @model_validator(mode="after")
     def _fill_directories(self) -> "ConsumerConfig":

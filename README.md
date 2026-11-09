@@ -115,6 +115,7 @@ AD changes travel as instructions in the per-domain zips and the consumer site a
 | **Jira** | `JIRA_CHECK=enforce` runs a change only if its ticket is in an allowed status; `JIRA_COMMENT=true` comments the outcome. |
 | **Alerts** | Email and webhook templates (Teams, Slack, ServiceNow, ...) from [notify.example.yaml](notify.example.yaml): https only, private targets need an explicit opt-in, HMAC-signed. |
 | **Sign-in** | Two-factor sign-in (TOTP authenticator app + one-time recovery codes; secrets encrypted with `WEB_SECRET_KEY`), required by role with `WEB_MFA_REQUIRED_ROLE`. |
+| **AD receipts** | Each consumer site sends back a signed (optionally encrypted) receipt per zip and per plan decision; requests show what AD actually did ("AD: applied 2 (site-b)"), the AD instructions page shows each instruction's outcome per site, failures alert. A site can only report for itself (its own trusted key). |
 | **Audit** | Every entry is hash-chained to the previous one: `iam maintenance verify-audit` (or Audit → Verify) detects changed or removed entries; the service checks hourly and alerts. |
 
 ## Consumer site

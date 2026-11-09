@@ -65,7 +65,10 @@ def register(app: Flask) -> None:
 
     @app.get("/outbox/<int:seq>")
     def outbox_detail(seq: int):
-        return render_template("p_outbox_detail.html", e=outbox.event(seq) or abort(404))
+        from ..receipts import ReceiptStore
+        e = outbox.event(seq) or abort(404)
+        ids = [i.get("instruction_id") for i in (e["payload"].get("instructions") or []) if i.get("instruction_id")]
+        return render_template("p_outbox_detail.html", e=e, receipts=ReceiptStore(db).for_instructions(ids))
 
     @app.post("/outbox/retry-dead")
     @require_role("operator")

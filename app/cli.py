@@ -212,6 +212,13 @@ async def _sync(args: argparse.Namespace, settings, client) -> int:
         elif args.sync_cmd == "status":
             _print({"tracked": sync.store.counts(), "outbox": sync.store.outbox_stats(),
                     "runs": sync.store.recent_runs(5)})
+        elif args.sync_cmd == "receipts":
+            if sync.cfg.receipts is None:
+                raise SystemExit("no `receipts:` section in the sync config")
+            from .receipts import import_receipts
+            counts = import_receipts(sync.store.db, sync.cfg.receipts)
+            _print(counts)
+            return 1 if counts["rejected"] else 0
     finally:
         await sync.aclose()
     return 0
@@ -268,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--force", action="store_true", help="export every domain, even unchanged")
     ss.add_parser("retry-dead", help="re-queue events that ran out of attempts")
     ss.add_parser("status", help="tracked counts, outbox and recent runs")
+    ss.add_parser("receipts", help="import AD receipts from the consumer sites (sync.yaml receipts:)")
 
     s = sub.add_parser("consumer", help="apply the producer side's zips to this site's OpenIAM")
     cs = s.add_subparsers(dest="consumer_cmd", required=True)

@@ -21,7 +21,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .. import bundlesec
+from .. import bundlesec, receipts
+from ..receipts import ReceiptWriter
 from ..config import Settings
 from ..db import LockTimeout
 from ..logs import logger
@@ -147,6 +148,8 @@ class Consumer:
                          (bundlesec.load_public_key(p) for p in cfg.trusted_signing_keys)}
         self._identities = (bundlesec.load_identities(cfg.age_identity_file)
                             if cfg.age_identity_file else None)
+        # Signed receipts back to the producer (None: not configured on this site).
+        self.receipts = ReceiptWriter(cfg.receipts, store.db) if cfg.receipts else None
         # Called once per loop iteration (daily retention purge).
         self.housekeeping = None
         # Set by the builder: operator requests from the oversight web.
@@ -182,7 +185,22 @@ class Consumer:
                 results = [await self.process_file(p) for p in self.find_bundles()]
         except LockTimeout:
             raise ConsumerBusy("another consumer scan is running") from None
-        return {"files": results}
+        written = self.flush_receipts()
+        return {"files": results, **({"receipts": len(written)} if written else {})}
+
+    def _receipt(self, receipt: dict[str, Any]) -> None:
+        if self.receipts is not None:
+            self.receipts.outbox.add(receipt)
+
+    def flush_receipts(self) -> list[str]:
+        """Write queued receipts (also the ones the oversight web queued) to the share."""
+        if self.receipts is None:
+            return []
+        try:
+            return self.receipts.flush()
+        except Exception:
+            logger.exception("writing receipts failed")
+            return []
 
     async def loop(self) -> None:
         arrived = asyncio.Event()
@@ -260,6 +278,8 @@ class Consumer:
             self.store.save_file(sha256=sha, name=name, status="failed", received_at=now,
                                  processed_at=now, error=str(e))
             self.store.log_action(sha, None, None, None, "reject", False, str(e))
+            self._receipt(receipts.not_applied(name, sha, None, "rejected", f"zip rejected: {e}",
+                                               target=self.target))
             stored = self._move(path, None, self.cfg.failed)
             self.store.update_file(sha, stored_at=stored)
             logger.warning("consumer rejected {}: {}", name, e)
@@ -271,13 +291,19 @@ class Consumer:
         last = self.store.domain_state(domain)
         if self.cfg.domains and domain not in self.cfg.domains:
             status, summary = "skipped", {"reason": "domain not accepted"}
+            self._receipt(receipts.not_applied(name, sha, domain, status, summary["reason"],
+                                               bundle.instructions, self.target))
         elif last and generated <= last["last_generated_at"] and not force:
             status, summary = "stale", {"reason": f"older than applied {last['last_generated_at']}"}
+            self._receipt(receipts.not_applied(name, sha, domain, status, summary["reason"],
+                                               bundle.instructions, self.target))
         else:
             self.store.save_file(**base, status="processing")
             if self.target == "ad":
                 try:
                     summary, status = await self._apply_ad(sha, domain, bundle.instructions)
+                    if summary.get("plan_id"):
+                        self._receipt(receipts.from_plan(self.store.plan(summary["plan_id"]), name))
                 except AdError as e:
                     # AD unreachable is not the zip's fault: leave it in the inbox, retry next scan.
                     logger.warning("AD unavailable, {} stays in the inbox: {}", name, e)
@@ -285,11 +311,19 @@ class Consumer:
                             "error": str(e)}
             else:
                 summary = await self._apply(sha, domain, entities)
+                outcomes: list[dict[str, Any]] = []
                 if self.cfg.apply_instructions and bundle.instructions:
-                    extra = await self._apply_instructions_openiam(sha, domain, bundle.instructions)
+                    extra = await self._apply_instructions_openiam(sha, domain, bundle.instructions, outcomes)
                     for k, v in extra.items():
                         summary[k] = summary.get(k, 0) + v
                 status = "applied" if summary.get("failed", 0) == 0 else "partial"
+                if bundle.instructions:
+                    self._receipt({"zip": name, "zip_sha256": sha, "domain": domain, "status": status,
+                                   "target": "openiam", "instructions": outcomes or [
+                                       {"instruction_id": (ln.get("instruction") or {}).get("instruction_id"),
+                                        "op": (ln.get("instruction") or {}).get("op"),
+                                        "status": "not_applied", "detail": "apply_instructions is off"}
+                                       for ln in bundle.instructions]})
             if not last or generated > last["last_generated_at"]:
                 self.store.save_domain(domain, generated, sha, sum(len(v) for v in entities.values()))
         self.store.save_file(**base, status=status, processed_at=time.time(), summary=summary)
@@ -379,6 +413,9 @@ class Consumer:
                                decided_by=by, decided_at=time.time(), applied_at=time.time())
         self._log_ad(plan["file_sha256"], plan["domain"], items, applied=True)
         self.store.update_file(plan["file_sha256"], status=status)
+        f = self.store.file(plan["file_sha256"]) or {}
+        self._receipt(receipts.from_plan(self.store.plan(plan_id), f.get("name")))
+        self.flush_receipts()
         return {"plan_id": plan_id, "status": status, **summarize(items)}
 
     def operator_handlers(self) -> dict:
@@ -407,8 +444,8 @@ class Consumer:
 
     # ---- OpenIAM target: instructions ------------------------------------------
 
-    async def _apply_instructions_openiam(self, sha: str, domain: str,
-                                          lines: list[dict]) -> dict[str, int]:
+    async def _apply_instructions_openiam(self, sha: str, domain: str, lines: list[dict],
+                                          outcomes: list[dict] | None = None) -> dict[str, int]:
         """Carry out what the zip's records cannot express, in instruction order."""
         counts: Counter[str] = Counter()
         for line in sorted(lines, key=lambda x: x.get("seq") or 0):
@@ -416,8 +453,12 @@ class Consumer:
             op, cls = ins["op"], ins["object_class"]
             key = json.dumps(ins.get("key"))
             why = (line.get("why") or {}).get("summary")
+            out = outcomes if outcomes is not None else []
+            base = {"instruction_id": ins.get("instruction_id"), "op": op, "object_class": cls,
+                    "key": ins.get("key")}
             if op in ("create", "update") or (op == "delete" and cls != "user"):
                 counts["covered_by_records"] += 1
+                out.append({**base, "status": "covered_by_records", "detail": None})
                 continue
             try:
                 done = await self._do_instruction(ins)
@@ -425,7 +466,9 @@ class Consumer:
                 counts["failed"] += 1
                 self.store.log_action(sha, domain, f"instruction:{cls}", key, op, False,
                                       f"{e}" + (f" | why: {why}" if why else ""))
+                out.append({**base, "status": "failed", "detail": str(e)})
                 continue
+            out.append({**base, "status": "skipped" if done.startswith("skipped") else "applied", "detail": done})
             counts[f"instruction_{op}"] += 1
             self.store.log_action(sha, domain, f"instruction:{cls}", key, op, True,
                                   " | ".join(x for x in (done, why) if x))

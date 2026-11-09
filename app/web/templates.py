@@ -272,7 +272,13 @@ P_OUTBOX_DETAIL = """{% extends "base.html" %}{% block title %}Outbox {{ e.seq }
 <p>{% if e.delivered_at %}<span class="ok">delivered</span> {{ e.delivered_at|ts }}{% elif e.dead %}<span class="bad">dead</span>{% else %}<span class="warn">pending</span>{% endif %}
 · {{ e.attempts }} attempt(s){% if e.last_error %} · <span class="bad">{{ e.last_error }}</span>{% endif %}</p>
 {% if e.payload.why %}<h2>Why</h2><pre>{{ e.payload.why|pretty }}</pre>{% endif %}
-<h2>Instructions</h2><pre>{{ (e.payload.instructions or [])|pretty }}</pre>
+<h2>Instructions</h2>
+<div class="wrap"><table><tr><th>Instruction</th><th>At the consumer sites</th></tr>
+{% for i in e.payload.instructions or [] %}<tr><td>{{ i.op }} {{ i.object_class }} <span class="mono">{{ i.key }}</span>{% if i.member %} · member <span class="mono">{{ i.member.key }}</span>{% endif %}</td>
+<td>{% for r in receipts.get(i.instruction_id, []) %}<div><b>{{ r.site }}</b>: <span class="{{ 'bad' if r.status in ('failed','rejected','not_applied') else ('ok' if r.status in ('applied','unchanged','covered_by_records') else 'warn') }}">{{ r.status }}</span>
+<span class="muted">{{ r.at|ts }}</span>{% if r.detail %}<div class="small muted">{{ r.detail }}</div>{% endif %}</div>
+{% else %}<span class="muted">no receipt yet</span>{% endfor %}</td></tr>{% endfor %}</table></div>
+<details><summary class="muted">raw</summary><pre>{{ (e.payload.instructions or [])|pretty }}</pre></details>
 <h2>Full event</h2><pre>{{ e.payload|pretty }}</pre>
 {% endblock %}"""
 
@@ -473,6 +479,11 @@ pattern="[A-Za-z][A-Za-z0-9_]{1,9}-[1-9][0-9]{0,8}" title="Jira issue key, e.g. 
 {% macro justify_grid() %}<label>Jira ticket *<input name="jira_ticket" placeholder="IAM-123" required maxlength="20"
 pattern="[A-Za-z][A-Za-z0-9_]{1,9}-[1-9][0-9]{0,8}" title="Jira issue key, e.g. IAM-123"></label>
 <label>Justification *<input name="reason" placeholder="why is this needed? (10+ characters)" required minlength="10" maxlength="1024"></label>{% endmacro %}
+{% macro ad(r) %}{% if r.ad %}<div class="small">AD:
+{% if not r.ad.reported %}<span class="warn">waiting for the consumer site ({{ r.ad.total }})</span>
+{% else %}{% for st, n in r.ad.by_status.items() %}<span class="{{ 'bad' if st in ('failed','rejected','not_applied') else ('ok' if st in ('applied','unchanged','covered_by_records') else 'warn') }}">{{ st }} {{ n }}</span>{{ ' · ' if not loop.last }}{% endfor %}
+{% if r.ad.reported < r.ad.total %} · <span class="warn">{{ r.ad.total - r.ad.reported }} not yet reported</span>{% endif %}
+<span class="muted">({{ r.ad.sites|join(', ') }})</span>{% endif %}</div>{% endif %}{% endmacro %}
 {% macro save() %}<button formaction="/directory/preview">Preview</button>
 <button class="primary">Save for approval</button>{% endmacro %}
 {% macro domains_list(domains) %}<datalist id="domains">{% for d in domains %}<option value="{{ d }}">{% endfor %}</datalist>{% endmacro %}
@@ -618,7 +629,7 @@ P_DIR_OBJECT = """{% extends "base.html" %}{% import "dir_macros.html" as m with
 <h2>Requests about this {{ single[kind] }}</h2>
 <div class="wrap"><table data-dt data-dt-page="10"><tr><th>#</th><th>Asked</th><th>By</th><th>Change</th><th>Status</th></tr>
 {% for r in history %}<tr><td>{{ r.id }}</td><td>{{ r.at|ts }}</td><td>{{ r.requested_by }}</td><td>{{ m.summary(r.params) }}</td>
-<td class="{{ 'ok' if r.status == 'done' else ('bad' if r.status in ('failed','rejected') else 'warn') }}">{{ r.status }}{% if r.decided_by %}<div class="muted">{{ r.decided_by }}</div>{% endif %}</td></tr>
+<td class="{{ 'ok' if r.status == 'done' else ('bad' if r.status in ('failed','rejected') else 'warn') }}">{{ r.status }}{% if r.decided_by %}<div class="muted">{{ r.decided_by }}</div>{% endif %}{{ m.ad(r) }}</td></tr>
 {% else %}<tr><td colspan="5" class="muted">None yet.</td></tr>{% endfor %}</table></div>
 {% if rec %}<h2>OpenIAM record</h2><details><summary class="muted">snapshot data</summary><pre>{{ rec|pretty }}</pre></details>{% endif %}
 {% if person %}<h2>Producer record</h2><pre>{{ person|pretty }}</pre>{% endif %}
@@ -643,7 +654,7 @@ consumer site still applies AD changes according to its own mode (dry run / appr
 <div class="wrap"><table data-dt><tr><th>#</th><th>Change</th><th>Decided</th><th>Status</th><th>Result</th></tr>
 {% for r in decided %}<tr><td>{{ r.id }}</td><td>{{ m.summary(r.params) }}<div class="muted">asked by {{ r.requested_by }}</div></td>
 <td>{{ r.decided_by }}<div class="muted">{{ r.decided_at|ts }}</div>{% if r.decision_note %}<div>{{ r.decision_note }}</div>{% endif %}</td>
-<td class="status-{{ r.status }} {{ 'ok' if r.status == 'done' else ('bad' if r.status in ('failed','rejected') else 'warn') }}">{{ r.status }}</td>
+<td class="status-{{ r.status }} {{ 'ok' if r.status == 'done' else ('bad' if r.status in ('failed','rejected') else 'warn') }}">{{ r.status }}{{ m.ad(r) }}</td>
 <td>{% if r.result %}<details><summary class="muted">{{ (r.result.actions or [r.result.error])|join('; ')|truncate(80) }}</summary><pre>{{ r.result|pretty }}</pre></details>{% endif %}</td></tr>
 {% else %}<tr><td colspan="5" class="muted">None.</td></tr>{% endfor %}</table></div>
 {% endblock %}"""
@@ -847,6 +858,25 @@ against segregation of duties, and is applied only after an approver agrees.</p>
 <button class="primary">Send request</button></form>
 {% endblock %}"""
 
+P_RECEIPTS = """{% extends "base.html" %}{% block title %}AD receipts{% endblock %}{% block body %}
+<h1>AD receipts</h1>
+<p class="muted">Signed reports from the consumer sites: what happened to each AD instruction (applied, unchanged,
+failed, waiting for approval, rejected...). The producer service imports them from the share every 5 minutes.</p>
+<h2>Sites</h2>
+<div class="wrap"><table><tr><th>Site</th><th>Trusted key</th><th>Last receipt</th></tr>
+{% for site in (trusted + last.keys()|list)|unique|sort %}<tr><td>{{ site }}</td><td>{{ 'yes' if site in trusted else '' }}</td>
+<td class="{{ 'warn' if site not in last or now - last[site] > 86400 }}">{{ last[site]|ts if site in last else 'never' }}</td></tr>
+{% else %}<tr><td colspan="3" class="muted">No sites configured (sync.yaml <span class="mono">receipts:</span>) and no receipts yet.</td></tr>{% endfor %}</table></div>
+<h2>Recent receipts</h2>
+<div class="wrap"><table data-dt data-dt-page="25"><tr><th>Received</th><th>Site</th><th>Zip</th><th>Domain</th><th>Status</th><th>Instructions</th><th>Signed</th></tr>
+{% for r in rows %}{% set items = r.payload.instructions or [] %}<tr><td>{{ r.received_at|ts }}</td><td>{{ r.site }}</td><td class="mono small">{{ r.zip_name or '' }}</td><td>{{ r.domain or '' }}</td>
+<td class="{{ 'bad' if r.status in ('failed','rejected','partial') else ('ok' if r.status == 'applied' else 'warn') }}">{{ r.status }}</td>
+<td>{{ items|length }}{% set bad = items|selectattr('status', 'equalto', 'failed')|list %}{% if bad %} · <span class="bad">{{ bad|length }} failed</span>{% endif %}
+<details><summary class="muted">detail</summary><pre>{{ items|pretty }}</pre></details></td>
+<td class="{{ 'ok' if r.signed_by else 'warn' }}">{{ 'by ' ~ r.signed_by if r.signed_by else 'unsigned' }}</td></tr>
+{% else %}<tr><td colspan="7" class="muted">No receipts yet.</td></tr>{% endfor %}</table></div>
+{% endblock %}"""
+
 P_NOTIFICATIONS = """{% extends "base.html" %}{% block title %}Notifications{% endblock %}{% block body %}
 <h1>Notifications</h1>
 <p class="muted">Events queued for email and webhooks. The producer service delivers them using
@@ -883,7 +913,7 @@ TEMPLATES = {
     "p_dir_object.html": P_DIR_OBJECT, "p_approvals.html": P_APPROVALS,
     "p_governance.html": P_GOVERNANCE, "p_campaign.html": P_CAMPAIGN, "p_reports.html": P_REPORTS,
     "p_notifications.html": P_NOTIFICATIONS, "p_insights.html": P_INSIGHTS, "p_tree.html": P_TREE,
-    "p_request_access.html": P_REQUEST_ACCESS, "p_preview.html": P_PREVIEW,
+    "p_request_access.html": P_REQUEST_ACCESS, "p_receipts.html": P_RECEIPTS, "p_preview.html": P_PREVIEW,
     "p_batch_preview.html": P_BATCH_PREVIEW, "p_import.html": P_IMPORT, "p_move.html": P_MOVE,
     "base.html": BASE, "save_search.html": SAVE_SEARCH, "login.html": LOGIN, "account.html": ACCOUNT, "login_mfa.html": LOGIN_MFA,
     "account_mfa.html": ACCOUNT_MFA, "account_mfa_codes.html": ACCOUNT_MFA_CODES,

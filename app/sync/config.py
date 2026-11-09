@@ -5,6 +5,7 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from ..ad import AdMapping
+from ..receipts import ReceiptImportConfig
 
 
 class EntityConfig(BaseModel):
@@ -142,6 +143,8 @@ class SyncConfig(BaseModel):
     export: ExportConfig | None = None
     # How changes are expressed as AD instructions for the receiving site.
     ad: AdMapping = AdMapping()
+    # Receipts from the consumer sites (app/receipts.py): where they arrive, whose to trust.
+    receipts: ReceiptImportConfig | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "SyncConfig":

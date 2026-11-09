@@ -12,12 +12,14 @@ from flask import Flask, abort, flash, g, redirect, render_template, request
 from pydantic import ValidationError
 
 import csv
+import time
 import io
 import os
 
 from ..directory import KINDS, ORG_TYPES, DirectoryRequest, plan
 from ..governance import Governance
 from ..notify import Notifications
+from ..receipts import ReceiptStore, summarize_ad
 from ..operator import ApprovalError, OperatorRequests, approvals_needed, in_scope
 from ..producer.store import ProducerStore
 from ..sync.store import Store
@@ -113,6 +115,16 @@ def register(app: Flask) -> None:
     snapshot, producer, requests = Store(db), ProducerStore(db), OperatorRequests(db)
     governance = Governance(db)
     notes = Notifications(db)
+    receipts = ReceiptStore(db)
+
+    def with_ad(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add r["ad"]: what the consumer sites reported for the request's AD instructions."""
+        ids = sorted({i for r in rows for i in ((r.get("result") or {}).get("instruction_ids") or [])})
+        found = receipts.for_instructions(ids)
+        for r in rows:
+            mine = (r.get("result") or {}).get("instruction_ids") or []
+            r["ad"] = summarize_ad(mine, found) if mine else None
+        return rows
 
     def _kind(kind: str) -> str:
         if kind not in KINDS:
@@ -140,8 +152,8 @@ def register(app: Flask) -> None:
                 return any(about(i) for i in p["items"])
             return ((p.get("kind") == kind and p.get("name") == name)
                     or (p.get("member_kind") == kind and p.get("member") == name))
-        return [r for r in requests.page("producer", 500)
-                if r["action"].startswith("directory") and about(r["params"] or {})][:30]
+        return with_ad([r for r in requests.page("producer", 500)
+                        if r["action"].startswith("directory") and about(r["params"] or {})][:30])
 
     def _domains() -> list[str]:
         return sorted(snapshot.last_exports())
@@ -391,6 +403,21 @@ def register(app: Flask) -> None:
                                                           ext["settings"].approvals_for_destructive,
                                                           ext["settings"].bulk_dual_approval_over))
 
+    @app.get("/receipts")
+    def receipts_page():
+        from ..sync.config import load_config
+        import os
+        settings = ext["settings"]
+        trusted = []
+        try:
+            if os.path.isfile(settings.sync_config_path):
+                rc = load_config(settings.sync_config_path).receipts
+                trusted = sorted(rc.trusted) if rc else []
+        except Exception:
+            pass
+        return render_template("p_receipts.html", rows=receipts.recent(200), last=receipts.last_per_site(),
+                               trusted=trusted, now=time.time())
+
     # ---- approval (four eyes) ------------------------------------------------
 
     @app.get("/approvals")
@@ -398,7 +425,7 @@ def register(app: Flask) -> None:
     def approvals():
         rows = [r for r in requests.page("producer", 500) if r["action"].startswith("directory")]
         waiting = sorted((r for r in rows if r["status"] == "awaiting_approval"), key=lambda r: r["id"])
-        decided = [r for r in rows if r["decided_by"]][:50]
+        decided = with_ad([r for r in rows if r["decided_by"]][:50])
         scope = g.user.get("approver_scope")
         for r in waiting:
             r["mine"] = in_scope(scope, r["params"] or {})

@@ -13,6 +13,22 @@ PAGE = 100
 def register(app: Flask) -> None:
     ext = app.extensions["biam"]
     db, record, require_role, settings = ext["db"], ext["record"], ext["require_role"], ext["settings"]
+
+    def _queue_receipt(plan_id: int, file_sha: str) -> None:
+        """Tell the producer (via the consumer service, which signs it) that a plan's
+        outcome changed. Only when this site sends receipts."""
+        import os
+        if not os.path.isfile(settings.consumer_config_path):
+            return
+        from ..consumer.config import load_consumer_config
+        from ..receipts import ReceiptOutbox, from_plan
+        try:
+            if load_consumer_config(settings.consumer_config_path).receipts is None:
+                return
+        except Exception:
+            return
+        f = store.file(file_sha) or {}
+        ReceiptOutbox(db).add(from_plan(store.plan(plan_id), f.get("name")))
     store, requests = ConsumerStore(db), OperatorRequests(db)
     target = settings.consumer_target
     drift_t = db.tables.drift_reports
@@ -140,6 +156,7 @@ def register(app: Flask) -> None:
         else:
             store.update_plan(plan_id, status="rejected", decided_by=who(), decided_at=time.time())
             store.update_file(p["file_sha256"], status="rejected")
+            _queue_receipt(plan_id, p["file_sha256"])
             record("ad_plan.reject", target=str(plan_id))
             flash(f"Plan {plan_id} rejected: nothing is applied.", "ok")
         return redirect(f"/ad/plans/{plan_id}")
