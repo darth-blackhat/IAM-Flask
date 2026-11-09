@@ -16,18 +16,43 @@ backend_iam_env_by_service:
   producer:
     BACKEND_API_KEY: "{{ vault_backend_api_key }}"
     SYNC_WEBHOOK_SECRET: "{{ vault_sync_webhook_secret }}"
+    APPROVALS_FOR_DESTRUCTIVE: "2"
+    NOTIFY_CONFIG_PATH: /config/notify.yaml              # optional: email / webhooks
+    NOTIFY_SMTP_PASSWORD: "{{ vault_notify_smtp_password }}"
+    REPORTS_FOLDER: /data/reports
+    JIRA_CHECK: "off"                                    # off | warn | enforce
+    # JIRA_BASE_URL: https://yourcompany.atlassian.net
+    # JIRA_ALLOWED_STATUSES: "Approved,In Progress"
+    # JIRA_COMMENT: "true"
+    # JIRA_USER: svc-iam@example.com
+    # JIRA_API_TOKEN: "{{ vault_jira_api_token }}"
   web:
     WEB_USERNAME: admin
     WEB_PASSWORD: "{{ vault_web_password }}"           # first admin only
-    WEB_SECRET_KEY: "{{ vault_web_secret_key }}"
+    WEB_SECRET_KEY: "{{ vault_web_secret_key }}"       # also seals the MFA secrets: keep it stable
+    WEB_MFA_REQUIRED_ROLE: admin
+    APPROVALS_FOR_DESTRUCTIVE: "2"
+    JIRA_CHECK: "off"                                    # same value as the producer (enforce blocks approval)
+    WEB_AUTH_MODE: local                                 # local | ldap | both (AD sign-in, read-only)
+    # WEB_LDAP_URLS: ldaps://dc1.corp.example:636,ldaps://dc2.corp.example:636
+    # WEB_LDAP_CA_FILE: /config/ad-ca.pem
+    # WEB_LDAP_BIND_DN: CN=svc-iam-web,OU=Service Accounts,DC=corp,DC=example
+    # WEB_LDAP_BIND_PASSWORD: "{{ vault_web_ldap_bind_password }}"
+    # WEB_LDAP_BASE_DN: DC=corp,DC=example
+    # WEB_LDAP_GROUP_ADMIN: CN=GRP-IAM-Admins,OU=Groups,DC=corp,DC=example
+    # WEB_LDAP_GROUP_AUDITOR: CN=GRP-IAM-Auditors,OU=Groups,DC=corp,DC=example
   consumer:
     CONSUMER_TARGET: openiam                             # or: ad (site without OpenIAM)
     AD_BIND_PASSWORD: "{{ vault_ad_bind_password }}"
+    NOTIFY_CONFIG_PATH: /config/notify.yaml              # this site's own email / webhooks
+    NOTIFY_SMTP_PASSWORD: "{{ vault_notify_smtp_password }}"
   oversight:
     CONSUMER_TARGET: openiam
     WEB_USERNAME: admin
     WEB_PASSWORD: "{{ vault_oversight_password }}"
     WEB_SECRET_KEY: "{{ vault_oversight_secret_key }}"
+    WEB_MFA_REQUIRED_ROLE: admin
+    WEB_AUTH_MODE: local                                 # local | ldap | both (see web above)
 
 # ---- no internet --------------------------------------------------------------
 # Prepare once on a machine with internet: deploy/offline/download.sh (see

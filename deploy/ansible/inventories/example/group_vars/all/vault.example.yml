@@ -11,3 +11,6 @@ vault_web_secret_key: ""            # python -c "import secrets; print(secrets.t
 vault_oversight_password: ""
 vault_oversight_secret_key: ""
 vault_ad_bind_password: ""          # only for CONSUMER_TARGET=ad
+vault_notify_smtp_password: ""      # only with notify.yaml email (password_env: NOTIFY_SMTP_PASSWORD)
+vault_jira_api_token: ""            # only with JIRA_CHECK warn / enforce or JIRA_COMMENT
+vault_web_ldap_bind_password: ""    # only with WEB_AUTH_MODE ldap / both (read-only service account)

@@ -8,22 +8,26 @@ consume it.
 - Detects changes made directly in OpenIAM, and explains each one (*why*, from the HR event
   or the OpenIAM audit log).
 - Writes one signed, encrypted zip per domain. Each zip holds the data plus AD instructions.
+- Web UI for directory changes (users, groups, OUs, roles) with Jira ticket, justification,
+  segregation of duties and approval by someone else; access reviews, insights, reports.
+- Imports signed receipts from the consumer sites: what AD actually did with each change.
 
 **Consumer site**
 - Picks the zips up the moment they arrive.
 - Applies them to the site's own OpenIAM, or, for a site without OpenIAM, to Active
   Directory, with dry-run and approval.
-- Alerts when AD is changed without it.
+- Alerts when AD is changed without it, and reports each instruction's outcome back
+  (signed receipts).
 
 There are five services, each a systemd unit running a hardened Docker container, deployed by
 Ansible. Everything builds and deploys with no internet access.
 
 | Service | Command | Site | What it does |
 |---|---|---|---|
-| producer | `iam serve` | producer | REST API, producer intake, change detection, per-domain export |
-| web | `iam web` | producer | Web UI: producer activity, AD instructions, sync runs, API keys |
-| consumer | `iam consumer watch` | consumer | Inbox watchdog; applies zips to OpenIAM or AD; AD change alerts |
-| oversight | `iam oversight` | consumer | Web UI: zips, actions, AD plans and approval, AD changes, drift |
+| producer | `iam serve` | producer | REST API (incl. directory requests), producer intake, change detection, per-domain export, runs approved changes, receipt import, Jira, notifications |
+| web | `iam web` | producer | Web UI: directory, approvals, governance, insights, reports, request access, AD receipts, producer activity, AD instructions, sync runs, API keys, users, audit |
+| consumer | `iam consumer watch` | consumer | Inbox watchdog; applies zips to OpenIAM or AD; AD change alerts; signed receipts; its own notifications |
+| oversight | `iam oversight` | consumer | Web UI: zips, actions, AD plans and approval, AD changes, drift, alerts |
 | proxy | nginx | both | HTTPS in front of the services (optional mutual TLS for the API) |
 
 ## Diagrams
@@ -32,7 +36,7 @@ The diagrams are Mermaid source in [docs/](docs/), each with a rendered `.svg` n
 
 | Diagram | Shows |
 |---|---|
-| [data-flow](docs/data-flow.mmd) | Source of truth and OpenIAM admins → backend → zips → OpenIAM B or AD |
+| [data-flow](docs/data-flow.mmd) | Source of truth, OpenIAM admins and approved web changes → backend → zips → OpenIAM B or AD → receipts back |
 | [hire-sequence](docs/hire-sequence.mmd) | One hire, end to end |
 | [deployment](docs/deployment.mmd) | Ansible, hosts, systemd units, containers, proxy |
 | [database-er](docs/database-er.mmd) | Every table, as an ER diagram |
@@ -168,11 +172,12 @@ Configure the consumer in [consumer.example.yaml](consumer.example.yaml).
 |---|---|
 | Zips | Ed25519 signature (`require_signature`), age encryption (`require_encryption`), SHA-256 per file, stale and duplicate detection, field allowlist |
 | API | Named API keys (only a SHA-256 is stored, the key is shown once), scopes per key, CIDR allowlist per key and globally, expiry and revocation, per-key rate limit, body size limit, `X-Forwarded-For` believed only from trusted proxies, audit of every write and refusal |
-| Web UIs | Named users with roles (`viewer` < `operator` < `admin`), scrypt hashes, lockout plus per-IP throttling, signed `HttpOnly` / `Secure` / `SameSite=Strict` cookies with idle and absolute timeouts, CSRF token and origin check on every POST, strict Content-Security-Policy with no JavaScript, audit of logins, views and actions. The UIs hold no OpenIAM or AD credentials: buttons queue requests that the services run. |
-| Transport | nginx with TLS 1.2 and 1.3 only, HSTS, a login rate limit, `X-Forwarded-For` overwritten with the real client, and optional mutual TLS for the API. Services listen on 127.0.0.1 only. |
+| Web UIs | Named users with roles (`viewer`, `auditor` (reads the audit trail, approvals, reports; changes nothing), `operator`, `admin`), scrypt hashes or AD sign-in (`WEB_AUTH_MODE`, read-only LDAPS, roles from AD groups), two-factor sign-in (TOTP + recovery codes, sealed secrets, required per role), lockout plus per-IP throttling, signed `HttpOnly` / `Secure` / `SameSite=Strict` cookies with idle and absolute timeouts, CSRF token and origin check on every POST, strict Content-Security-Policy (same-origin scripts and styles only, vendored libraries with SRI, no inline code), audit of logins, views and actions in a hash-chained trail. Directory changes need a Jira ticket, a justification, a segregation-of-duties check and approval by someone else (two people for destructive or large ones; approvers can be scoped). The UIs hold no OpenIAM, Jira, SMTP or AD write credentials: buttons queue requests that the services run. |
+| Transport | nginx with TLS 1.2 and 1.3 only, HSTS, a rate limit on sign-in and the two-factor step, `X-Forwarded-For` overwritten with the real client, and optional mutual TLS for the API. Services listen on 127.0.0.1 only. |
 | Containers | Read-only root filesystem, every capability dropped, `no-new-privileges`, non-root user (uid 10001), PID limit, secrets in 0600 env files |
 | Data | Data minimization (`export.fields`), e-mail and phone redaction in logs, retention purge |
-| AD | See the AD target guard rails above, plus alerts on changes made without the consumer |
+| AD | See the AD target guard rails above, plus alerts on changes made without the consumer. The producer never writes to AD; the web UIs only read it for sign-in. Receipts are signed per site, so one site cannot report for another. |
+| Outbound | Webhooks: https only, the checked address is the one connected to (no DNS rebinding), private targets only with `allow_private`, no redirects, response capped, HMAC-signed. Jira and SMTP only from the services. |
 
 Keys: `iam keys signing PREFIX` creates the producer's signing key pair, and
 `iam keys age FILE` creates a consumer site's identity and prints its recipient.
@@ -185,15 +190,22 @@ Keys: `iam keys signing PREFIX` creates the producer's signing key pair, and
   - Alert rules are in [deploy/prometheus/alerts.yml](deploy/prometheus/alerts.yml): stale
     or failing sync, blocked mass deletes, dead instructions, rejected or partial zips,
     domains not updated, AD plans waiting, drift, AD changed outside the consumer, a changed
-    protected group, authentication failures and locked users.
+    protected group, authentication failures, locked users, approvals waiting over a day,
+    notifications that gave up, and a consumer site that sent no receipt for a day.
+  - `GET /readyz` (API and both UIs): ready = database answers and schema is current.
+  - Email / webhooks for the same kinds of events without Prometheus: `notify.yaml` on each
+    site (see [notify.example.yaml](notify.example.yaml)).
 - **Database:** PostgreSQL in production (`DATABASE_URL`, a `backend_iam` schema; SQLite for
   development).
   - **Migrations:** Alembic migrations run at every start. `iam maintenance migrate` runs
     them by hand.
   - **Locks:** advisory locks let several instances share the database.
 - **Retention:** the `RETENTION_*_DAYS` settings. The purge runs daily inside the services;
-  run it by hand with `iam maintenance purge [--dry-run]`. Pending and dead events and the
-  current state are never purged.
+  run it by hand with `iam maintenance purge [--dry-run]`. Pending and dead events, the
+  current state, changes waiting for approval and undelivered notifications or receipts are
+  never purged.
+- **Audit integrity:** `iam maintenance verify-audit` (exit 1 if the hash chain is broken);
+  the producer service also checks hourly and alerts (`audit.tampered`).
 - **Logs:** loguru to journald (`journalctl -u backend-iam-<service>`). Set `LOG_JSON=true`
   for log shippers.
 
@@ -219,7 +231,8 @@ API key that has scope `directory:write`; the same rules apply as in the web UI 
 justification, segregation of duties, approval by people in the producer UI):
 
 ```bash
-curl -H "X-API-Key: $KEY" -H "Content-Type: application/json" https://<proxy>/directory/requests   -d '{"via":"ad","kind":"group","op":"add_member","name":"GRP-VPN","member_kind":"user",
+curl -H "X-API-Key: $KEY" -H "Content-Type: application/json" https://<proxy>/directory/requests \
+  -d '{"via":"ad","kind":"group","op":"add_member","name":"GRP-VPN","member_kind":"user",
        "member":"E1001","jira_ticket":"IAM-123","reason":"remote work approved by manager"}'
 # 202 {"request_id": 42, "status": "awaiting_approval", "required_approvals": 1}
 curl -H "X-API-Key: $KEY" https://<proxy>/directory/requests/42      # scope directory:read
@@ -287,11 +300,12 @@ and `download.sh` again.
 ```text
 iam serve | web | oversight                     run the API / producer UI / consumer UI
 iam producer apply FILE.json | person ID        producer events by hand
-iam sync run [--baseline] [--allow-mass-delete] | watch | export [--force] | deliver | status
+iam sync run [--baseline] [--allow-mass-delete] | watch | export [--force] | deliver | retry-dead
+         | status | receipts                   receipts = import AD receipts from the consumer sites
 iam consumer scan | watch
 iam apikey create NAME --scope S [--cidr C] [--expires-days N] | list | revoke NAME | scopes
 iam webuser add NAME --role R | passwd | role | disable | enable | unlock | list
-iam keys signing PREFIX | age FILE
+iam keys signing PREFIX | age FILE | show FILE   show = key id / recipient (never secrets)
 iam maintenance migrate | purge [--dry-run] | verify-audit
 iam ping | search | export | raw | api-docs | import    OpenIAM tools
 ```

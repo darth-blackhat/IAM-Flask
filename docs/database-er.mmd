@@ -148,7 +148,7 @@ erDiagram
     web_users {
         varchar username PK
         text password_hash "scrypt"
-        varchar role "viewer | operator | admin"
+        varchar role "viewer | auditor | operator | admin"
         bool disabled
         int failed_logins
         float locked_until
@@ -156,6 +156,13 @@ erDiagram
         float created_at
         float last_login_at
         float password_changed_at
+        text totp_secret "AES-GCM sealed, null = no MFA"
+        bigint totp_last_counter "no code replay"
+        jsonb recovery_codes "sha256 of unused codes"
+        jsonb approver_scope "domains / OUs, null = all"
+        varchar employee_id "self-service"
+        varchar auth_source "local | ldap"
+        varchar external_dn "the AD account"
     }
     audit_trail {
         bigint id PK
@@ -167,18 +174,26 @@ erDiagram
         text target
         bool ok
         text detail
+        char64 prev_hash "hash chain"
+        char64 hash "sha256(prev_hash + entry)"
     }
     operator_requests {
         bigint id PK
         float at
         varchar requested_by
         varchar service "producer | consumer"
-        varchar action "sync_run | export | scan | reprocess | drift | ad_approve | ad_watch"
-        jsonb params
-        varchar status "pending | running | done | failed"
+        varchar action "directory | directory_batch | sync_run | export | receipts_import | scan | ..."
+        jsonb params "directory: change + jira_ticket + reason"
+        varchar status "awaiting_approval | rejected | pending | running | done | failed"
         float started_at
         float finished_at
-        jsonb result
+        jsonb result "actions, instruction_ids, ..."
+        jsonb approvals "by, at, note"
+        int required_approvals "2 for destructive / large"
+        varchar decided_by
+        float decided_at
+        text decision_note
+        jsonb checks "jira status while waiting"
     }
     drift_reports {
         bigint id PK
@@ -229,6 +244,89 @@ erDiagram
         float acknowledged_at
         text note
     }
+    sod_policies {
+        bigint id PK
+        varchar name UK
+        varchar left_kind
+        varchar left_name
+        varchar right_kind
+        varchar right_name
+        bool enabled
+    }
+    cert_campaigns {
+        bigint id PK
+        varchar name
+        varchar scope_kind
+        varchar scope_name
+        varchar status "open | closed"
+        float due_at
+        float overdue_notified_at
+    }
+    cert_items {
+        bigint id PK
+        bigint campaign_id FK
+        varchar employee_id
+        varchar kind
+        varchar object_name
+        varchar decision "certify | revoke"
+        bigint request_id "the revocation request"
+    }
+    timed_grants {
+        bigint id PK
+        bigint request_id
+        jsonb params "the add_member to reverse"
+        float expires_at
+        varchar status "active | expired"
+        bigint removal_request_id
+    }
+    notifications {
+        bigint id PK
+        float at
+        varchar event
+        varchar title
+        text text
+        varchar status "pending | sent | dead"
+        int attempts
+    }
+    report_schedules {
+        bigint id PK
+        varchar report
+        varchar every "daily | weekly"
+        float last_run_at
+        text last_file
+    }
+    saved_searches {
+        bigint id PK
+        varchar username
+        varchar name
+        varchar path "a local list URL"
+    }
+    consumer_receipts {
+        bigint id PK
+        float at
+        jsonb payload "per-instruction outcome"
+        varchar status "pending | written"
+        text file
+    }
+    ad_receipts {
+        bigint id PK
+        varchar site
+        bigint receipt_id "UK with site"
+        varchar zip_name
+        varchar status
+        varchar signed_by
+        jsonb payload
+    }
+    ad_receipt_items {
+        varchar instruction_id PK
+        varchar site PK
+        varchar status "applied | unchanged | failed | ..."
+        text detail
+    }
+    cert_campaigns ||--o{ cert_items : "campaign_id"
+    cert_items |o--o| operator_requests : "revocation request"
+    operator_requests ||--o| timed_grants : "granted until a date"
+    ad_receipts ||--o{ ad_receipt_items : "receipt"
     consumer_files ||--o| ad_plans : "file_sha256"
     ad_plans ||--o{ consumer_actions : "planned / applied changes"
     ad_watch_state ||--o{ ad_change_alerts : "dn"

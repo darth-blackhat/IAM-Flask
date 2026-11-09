@@ -53,6 +53,10 @@ http {
             limit_req zone=login burst=5 nodelay;
             proxy_pass http://{{ site.upstream }};
         }
+        location = /login/mfa {
+            limit_req zone=login burst=5 nodelay;
+            proxy_pass http://{{ site.upstream }};
+        }
         location = /healthz { access_log off; return 200 "ok\n"; }
         location / {
             proxy_pass http://{{ site.upstream }};

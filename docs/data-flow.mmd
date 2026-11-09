@@ -18,8 +18,11 @@ flowchart LR
         WHY{"<b>why?</b><br/>source of truth<br/>or admin"}
         DBA[("PostgreSQL<br/>state, outbox,<br/>activity, audit")]
         EX["<b>export</b><br/>per domain, field allowlist,<br/>sign (Ed25519), encrypt (age)"]
-        WA["<b>web</b> UI"]
+        WA["<b>web</b> UI<br/>directory changes need<br/>Jira ticket + justification,<br/>SoD check, approval by<br/>someone else"]
+        RI["<b>receipt import</b><br/>verify site key"]
+        NA(["email / webhooks"])
     end
+    JI(["Jira<br/>ticket status, comments"])
 
     SH[/"<b>shared folder</b><br/>DOMAIN/openiam-DOMAIN-UTC.zip.age<br/>data .jsonl/.csv<br/>ad_instructions.jsonl (why + payload)<br/>manifest.json + manifest.sig"/]
 
@@ -34,7 +37,10 @@ flowchart LR
         AW["<b>AD change watch</b><br/>changes made without<br/>the consumer"]
         DBB[("PostgreSQL<br/>files, actions, plans,<br/>alerts, drift")]
         OV["<b>oversight</b> UI<br/>approve plans,<br/>acknowledge alerts"]
+        RW["<b>receipts</b><br/>signed per site"]
+        NB(["email / webhooks"])
     end
+    SR[/"<b>shared folder</b><br/>receipts/receipt-SITE-*.json(.age)"/]
 
     HR -- "1 event + reason" --> PX1 --> P
     P -- "2 saveUser, entitle,<br/>terminate, enable/disable" --> OA
@@ -57,6 +63,13 @@ flowchart LR
     C --- DBB
     OV -. "reads, queues requests" .- DBB
     WA -. "reads, queues requests" .- DBA
+    WA -- "approved change:<br/>OpenIAM + AD or AD only" --> P
+    P -. "check ticket, comment" .- JI
+    PL -- "outcome per instruction" --> RW --> SR --> RI --> DBA
+    DBA --> NA
+    DBB --> NB
+    WA -. "sign-in: read-only LDAPS<br/>(WEB_AUTH_MODE)" .-> AD
+    OV -. "sign-in: read-only LDAPS" .-> AD
 
     classDef svc stroke-width:2px
-    class P,C,WA,OV,CD,EX,WD,AW svc
+    class P,C,WA,OV,CD,EX,WD,AW,RI,RW svc

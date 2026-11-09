@@ -15,7 +15,7 @@ flowchart TB
         PXA["backend-iam-proxy<br/>nginx :443 web, :8443 API"]
         UP["backend-iam-producer<br/>127.0.0.1:8000"]
         UW["backend-iam-web<br/>127.0.0.1:8090"]
-        CA[/"/etc/backend-iam/producer<br/>sync.yaml, producer.yaml,<br/>export-signing.key (ro)"/]
+        CA[/"/etc/backend-iam/producer<br/>sync.yaml, producer.yaml, notify.yaml,<br/>export-signing.key, receipt .pubs (ro)"/]
         XA[/"/srv/iam-exports"/]
         PXA --> UP
         PXA --> UW
@@ -28,7 +28,7 @@ flowchart TB
         PXB["backend-iam-proxy<br/>nginx :443 oversight"]
         UC["backend-iam-consumer<br/>metrics 127.0.0.1:9102"]
         UO["backend-iam-oversight<br/>127.0.0.1:8091"]
-        CB[/"/etc/backend-iam/consumer<br/>consumer.yaml, export-signing.pub,<br/>site.age, ad-ca.pem (ro)"/]
+        CB[/"/etc/backend-iam/consumer<br/>consumer.yaml, notify.yaml, export-signing.pub,<br/>site.age, receipts-site.key, ad-ca.pem (ro)"/]
         IB[/"/srv/iam-inbox"/]
         PXB --> UO
         CB --- UC
@@ -56,7 +56,16 @@ flowchart TB
     UO --> PGB
     UC --> OIB
     UC -. "LDAPS" .-> ADS
-    XA -. "share / sync" .-> IB
+    XA -. "share / sync: zips" .-> IB
+    IB -. "receipts back" .-> XA
+    SMTP(["SMTP / Teams / Slack /<br/>ServiceNow webhooks"])
+    JIRA(["Jira"])
+    UP -. "notifications" .-> SMTP
+    UC -. "notifications" .-> SMTP
+    UP -. "ticket check, comments" .-> JIRA
+    UW -. "sign-in only, read-only LDAPS<br/>(WEB_AUTH_MODE=ldap / both)" .-> ADS
+    UO -. "sign-in only, read-only LDAPS" .-> ADS
+    PROM -. "/readyz" .-> UW
     HRS --> PXA
     OPS --> PXA
     OPS --> PXB

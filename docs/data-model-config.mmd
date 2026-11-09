@@ -37,7 +37,29 @@ classDiagram
         +ExportConfig export  optional
         +AdMapping ad
         +AuditConfig audit  optional
+        +ReceiptImportConfig receipts  optional
     }
+    class ReceiptImportConfig {
+        +str folder
+        +Map~site,pub or list~ trusted  several keys during rotation
+        +bool require_signature
+        +str or list age_identity_file
+        +bool require_encryption
+    }
+    class NotifyConfig {
+        <<notify.yaml, each site>>
+        +EmailChannel email  optional
+        +List~Webhook~ webhooks
+    }
+    class Webhook {
+        +str url  https only
+        +List~str~ events
+        +any template  teams|slack|json|custom
+        +str secret_env  HMAC
+        +bool allow_private
+    }
+    NotifyConfig *-- "*" Webhook
+    SyncConfig *-- "0..1" ReceiptImportConfig
     class AuditConfig {
         +str search_path
         +Map criteria
@@ -113,6 +135,7 @@ classDiagram
         +LifecycleActions lifecycle_actions
         +bool terminate_removes_access
         +Map~str,Map~str,StatusRule~~ status_rules
+        +Map~str,str~ organization_type_ids  web org types -> OpenIAM
     }
     class DirectoryConfig {
         +str search_path
@@ -123,6 +146,8 @@ classDiagram
         +Map~str,any~ require  e.g. managedSysId
         +str create_path  optional
         +Map create_body
+        +str update_path, delete_path  web UI edits (optional)
+        +str add_child_path, remove_child_path  group nesting
     }
     class StatusRule {
         +bool hold  disables until cleared
@@ -160,7 +185,15 @@ classDiagram
         +UserEntity user
         +Map~Kind,DirectoryEntity~ directories
         +AdConfig ad  CONSUMER_TARGET=ad
+        +ReceiptWriterConfig receipts  optional
     }
+    class ReceiptWriterConfig {
+        +str folder
+        +str site
+        +str signing_key_file
+        +List~str~ encrypt_to
+    }
+    ConsumerConfig *-- "0..1" ReceiptWriterConfig
     class AdConfig {
         +List~str~ servers  ldaps://
         +str bind_dn
@@ -176,7 +209,13 @@ classDiagram
         +bool allow_delete
         +List~str~ protected_groups
         +AdWatchConfig watch
+        +Placement placement  OU per domain / org type
     }
+    class Placement {
+        +Map~domain,OUs~ domains  users_ou, groups_ou, ous_base
+        +Map~type,str~ org_types  parent OU per organization type
+    }
+    AdConfig *-- Placement
     class AdWatchConfig {
         +bool enabled
         +int interval_minutes
@@ -206,3 +245,4 @@ classDiagram
     Settings ..> SyncConfig : sync_config_path
     Settings ..> ProducerConfig : producer_config_path
     Settings ..> ConsumerConfig : consumer_config_path
+    Settings ..> NotifyConfig : notify_config_path

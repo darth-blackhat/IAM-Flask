@@ -81,11 +81,13 @@ classDiagram
     }
     class AdInstruction {
         +str instruction_id  uuid
-        +str op  create|update|delete|enable|disable|add_member|remove_member
+        +str op  create|update|delete|enable|disable|add_member|remove_member|move|rename
         +str object_class  user|group|organizationalUnit
         +Map~str,str~ key  e.g. employeeID: E1001 or cn: GRP-x
         +str openiam_id
-        +str source  producer|openiam-change
+        +str source  producer|openiam-change|web
+        +str domain  move: the OU the consumer places this domain in
+        +str new_name  rename
         +Map~str,any~ attributes  create / update
         +List~AttributeChange~ changes  update
         +MemberRef member  add_member / remove_member
@@ -186,6 +188,40 @@ classDiagram
         +int bytes
         +str sha256
     }
+    class DirectoryRequest {
+        <<web UI / POST /directory/requests>>
+        +str via  openiam|ad
+        +str kind  user|group|organization|role
+        +str op  create|update|delete|enable|disable|add_member|remove_member
+        +str name  employee id or object name
+        +str jira_ticket  required, e.g. IAM-123
+        +str reason  justification, required
+        +str domain
+        +str new_name  rename
+        +str member_kind  user|group
+        +str member
+        +str expires_on  time-limited access
+        +str department, company, manager, account_expires
+        +str group_scope, group_type, org_type
+    }
+    class Receipt {
+        <<consumer -> producer, signed per site>>
+        +str site
+        +int receipt_id
+        +str zip
+        +str domain
+        +str status  applied|partial|awaiting_approval|rejected|stale|...
+        +List~ReceiptItem~ instructions
+        +str signature  Ed25519 over the canonical receipt
+    }
+    class ReceiptItem {
+        +str instruction_id  matches AdInstruction
+        +str status  applied|unchanged|failed|skipped|awaiting_approval|rejected|not_applied
+        +str detail  DN or error
+    }
+    DirectoryRequest ..> AdInstruction : produces (after approval)
+    Receipt *-- "*" ReceiptItem
+    ReceiptItem ..> AdInstruction : instruction_id
     DomainBundle *-- BundleManifest
     DomainBundle *-- "*" InstructionLine
     InstructionLine *-- AdInstruction
