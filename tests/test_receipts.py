@@ -5,7 +5,6 @@ import json
 
 import pytest
 
-from app import bundlesec
 from app.consumer import Consumer, ConsumerConfig, ConsumerStore
 from app.consumer.ad_target import AdApplier
 from app.notify import Notifications
@@ -20,14 +19,6 @@ from .test_web import add_user, csrf, login
 
 def run(coro):
     return asyncio.run(coro)
-
-
-@pytest.fixture
-def keys(tmp_path):
-    site_b = bundlesec.generate_signing_key(tmp_path / "keys" / "site-b")
-    site_c = bundlesec.generate_signing_key(tmp_path / "keys" / "site-c")
-    recipient = bundlesec.generate_age_identity(tmp_path / "keys" / "producer.age")
-    return {"b": site_b, "c": site_c, "recipient": recipient, "identity": str(tmp_path / "keys" / "producer.age")}
 
 
 def writer(database, tmp_path, keys, site="site-b", key="b", encrypt=False) -> ReceiptWriter:

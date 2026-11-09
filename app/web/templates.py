@@ -885,7 +885,7 @@ failed, waiting for approval, rejected...). The producer service imports them fr
 
 P_NOTIFICATIONS = """{% extends "base.html" %}{% block title %}Notifications{% endblock %}{% block body %}
 <h1>Notifications</h1>
-<p class="muted">Events queued for email and webhooks. The producer service delivers them using
+<p class="muted">Events queued for email and webhooks. This site's service (iam serve / iam consumer watch) delivers them using
 <span class="mono">notify.yaml</span> (this UI holds no SMTP passwords or webhook secrets).</p>
 <div class="wrap"><table data-dt data-dt-page="25"><tr><th>#</th><th>When</th><th>Event</th><th>Title</th><th>Status</th></tr>
 {% for n in rows %}<tr><td>{{ n.id }}</td><td>{{ n.at|ts }}</td><td class="mono">{{ n.event }}</td>

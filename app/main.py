@@ -85,6 +85,9 @@ def build_consumer(settings: Settings, client: OpenIAMClient, db: Database) -> C
                         ConsumerStore(db), cfg, settings, target=settings.consumer_target, ad=ad)
     consumer.housekeeping = DailyPurge(db, settings).maybe_run
     consumer.operator_requests = OperatorRequests(db)
+    notify_cfg = load_notify_config(settings.notify_config_path)
+    if notify_cfg is not None:     # this site's own email / webhooks (no path to the producer needed)
+        consumer.notifier = Notifier(db, notify_cfg)
     return consumer
 
 

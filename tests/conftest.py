@@ -198,3 +198,13 @@ def service(sync, database, make_client, settings):
     producer = ProducerProcessor(make_client(), ProducerStore(database), cfg, settings,
                                  ad=sync.cfg.ad, outbox=sync.store)
     return DirectoryService(make_client(), producer=producer, sync=sync)
+
+
+@pytest.fixture
+def keys(tmp_path):
+    """Signing keys for two consumer sites and the producer's age identity (receipts)."""
+    from app import bundlesec
+    site_b = bundlesec.generate_signing_key(tmp_path / "keys" / "site-b")
+    site_c = bundlesec.generate_signing_key(tmp_path / "keys" / "site-c")
+    recipient = bundlesec.generate_age_identity(tmp_path / "keys" / "producer.age")
+    return {"b": site_b, "c": site_c, "recipient": recipient, "identity": str(tmp_path / "keys" / "producer.age")}

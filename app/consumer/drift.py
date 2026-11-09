@@ -57,6 +57,13 @@ async def drift_report(consumer: Consumer, domain: str, requested_by: str) -> di
         report_id = conn.execute(insert(t).values(
             at=time.time(), domain=domain, status=status, summary=summary,
             items=items[:MAX_ITEMS], requested_by=requested_by)).inserted_primary_key[0]
+    if status == "drift":
+        from ..notify import emit
+        emit(store.db, "drift.found", f"Drift in {domain}: {len(items)} difference(s)",
+             f"Drift report {report_id} ({summary['checked']} checked): " +
+             ", ".join(f"{k} {v}" for k, v in summary.items() if k not in ("checked", "differences", "zip",
+                                                                         "data_as_of", "target")),
+             {"report_id": report_id, "domain": domain})
     return {"report_id": report_id, "domain": domain, "status": status, **summary}
 
 

@@ -151,6 +151,13 @@ async def run_sync(client: OpenIAMClient, store: Store, cfg: SyncConfig, *,
     except Exception as e:
         store.finish_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
         logger.bind(run_id=run_id).warning("sync run {} failed: {}", run_id, e)
+        from ..notify import emit
+        if isinstance(e, MassDeleteError):
+            emit(store.db, "sync.mass_delete_blocked", "Change detection refused: mass delete",
+                 f"Run {run_id}: {e}\nCheck it is real, then run it again allowing the mass delete.", {"run_id": run_id})
+        else:
+            emit(store.db, "sync.failed", "Change detection failed",
+                 f"Run {run_id}: {type(e).__name__}: {e}", {"run_id": run_id})
         raise
     store.finish_run(run_id, "baseline" if baseline else "ok", summary)
     return {"run_id": run_id, "baseline": baseline, "entities": summary}

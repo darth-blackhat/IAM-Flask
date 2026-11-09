@@ -48,6 +48,17 @@ EVENTS = {
     "audit.tampered": "The audit trail's hash chain is broken",
     "report.scheduled": "A scheduled report was written",
     "ad.failed": "A consumer site reported AD instructions that failed",
+    # producer: change detection
+    "sync.failed": "A change detection run failed",
+    "sync.mass_delete_blocked": "A change detection run was refused as a mass delete",
+    "instructions.dead": "AD instructions could not be delivered and gave up",
+    # consumer site
+    "zip.rejected": "A zip was rejected (signature, encryption or checksum)",
+    "zip.partial": "A zip was only partly applied",
+    "ad.plan_waiting": "An AD plan waits for approval on the consumer site",
+    "ad.changed_outside": "AD was changed outside the consumer",
+    "ad.protected_group_changed": "A protected AD group (e.g. Domain Admins) changed",
+    "drift.found": "A drift report found differences",
 }
 MAX_ATTEMPTS = 10
 PRESETS = {
@@ -100,6 +111,14 @@ def load_notify_config(path: str) -> NotifyConfig | None:
 
 def wants(events: list[str], event: str) -> bool:
     return "*" in events or event in events or any(e.endswith(".*") and event.startswith(e[:-1]) for e in events)
+
+
+def emit(db: Database, event: str, title: str, text: str, data: dict[str, Any] | None = None) -> None:
+    """Queue a notification; never fails the caller (a sync run, a zip, ...)."""
+    try:
+        Notifications(db).add(event, title, text, data)
+    except Exception as e:
+        logger.error("could not queue notification {}: {}", event, e)
 
 
 # ---- outbox -------------------------------------------------------------------------------

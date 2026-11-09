@@ -26,6 +26,7 @@ from ..receipts import ReceiptWriter
 from ..config import Settings
 from ..db import LockTimeout
 from ..logs import logger
+from ..notify import emit
 from ..openiam import OpenIAMClient, OpenIAMError
 from ..schemas import EmailIn, UserIn
 from ..sync.engine import digest
@@ -152,6 +153,8 @@ class Consumer:
         self.receipts = ReceiptWriter(cfg.receipts, store.db) if cfg.receipts else None
         # Called once per loop iteration (daily retention purge).
         self.housekeeping = None
+        # Delivers this site's email / webhook notifications (set by the builder).
+        self.notifier = None
         # Set by the builder: operator requests from the oversight web.
         self.operator_requests = None
 
@@ -238,6 +241,11 @@ class Consumer:
                     logger.exception("AD change watch failed")
             if self.housekeeping:
                 self.housekeeping()
+            if self.notifier is not None:
+                try:
+                    await self.notifier.run_pending()
+                except Exception:
+                    logger.exception("notification delivery")
             # Wait for a zip to arrive or the next timed scan, answering operator
             # requests every few seconds meanwhile.
             deadline = time.monotonic() + self.cfg.interval_seconds
@@ -278,6 +286,7 @@ class Consumer:
             self.store.save_file(sha256=sha, name=name, status="failed", received_at=now,
                                  processed_at=now, error=str(e))
             self.store.log_action(sha, None, None, None, "reject", False, str(e))
+            emit(self.store.db, "zip.rejected", f"Zip rejected: {name}", str(e), {"zip": name, "sha256": sha})
             self._receipt(receipts.not_applied(name, sha, None, "rejected", f"zip rejected: {e}",
                                                target=self.target))
             stored = self._move(path, None, self.cfg.failed)
@@ -327,6 +336,13 @@ class Consumer:
             if not last or generated > last["last_generated_at"]:
                 self.store.save_domain(domain, generated, sha, sum(len(v) for v in entities.values()))
         self.store.save_file(**base, status=status, processed_at=time.time(), summary=summary)
+        if status == "partial":
+            emit(self.store.db, "zip.partial", f"Zip partly applied: {name}",
+                 f"Domain {domain}: {summary}", {"zip": name, "domain": domain})
+        elif status == "awaiting_approval":
+            emit(self.store.db, "ad.plan_waiting", f"AD plan waits for approval: {domain}",
+                 f"{summary.get('changes', 0)} AD change(s) from {name} wait for approval in the oversight UI (AD plans).",
+                 {"zip": name, "domain": domain, "plan_id": summary.get("plan_id")})
         stored = self._move(path, domain, self.cfg.archive)
         self.store.update_file(sha, stored_at=stored)
         logger.bind(domain=domain, file=name).info("consumer {} {} ({}): {}", status, name, domain, summary)
@@ -390,6 +406,14 @@ class Consumer:
             raise ConsumerError("the AD change watch is not enabled on this consumer")
         async with self.store.db.lock("consumer", timeout=60):
             alerts = await asyncio.to_thread(self.watcher.poll)
+        critical = [a for a in alerts if a.get("severity") == "critical"]
+        other = [a for a in alerts if a.get("severity") != "critical"]
+        for event, group, title in (("ad.protected_group_changed", critical, "Protected AD group changed"),
+                                    ("ad.changed_outside", other, "AD changed outside the consumer")):
+            if group:
+                emit(self.store.db, event, f"{title} ({len(group)})",
+                     "\n".join(f"{a.get('kind')} {a.get('object_class')} {a.get('dn')}" for a in group[:30]),
+                     {"count": len(group)})
         return {"alerts": len(alerts), "by_severity": summarize_by(alerts, "severity")}
 
     def _log_ad(self, sha: str, domain: str, items: list[dict], applied: bool) -> None:

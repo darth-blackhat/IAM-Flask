@@ -89,12 +89,20 @@ class Store:
 
     def mark_failed(self, seqs: list[int], error: str, max_attempts: int) -> None:
         o = self.outbox.c
+        died = []
         with self.connect() as conn:
             for seq in seqs:
                 attempts = conn.execute(select(o.attempts).where(o.seq == seq)).scalar_one() + 1
                 conn.execute(update(self.outbox).where(o.seq == seq).values(
                     attempts=attempts, next_attempt=time.time() + min(2 ** attempts, 3600),
                     last_error=error[:2000], dead=attempts >= max_attempts))
+                if attempts == max_attempts:
+                    died.append(seq)
+        if died:
+            from ..notify import emit
+            emit(self.db, "instructions.dead", f"{len(died)} AD instruction batch(es) gave up",
+                 f"Delivery failed {max_attempts} times: {error[:500]}\nRetry them on the AD instructions page.",
+                 {"seqs": died[:100]})
 
     def events_after(self, after_seq: int, limit: int) -> list[dict[str, Any]]:
         """Pull-mode feed for the other site: every event with seq > after_seq."""

@@ -599,6 +599,7 @@ NAV = {
     "consumer": [("/", "Dashboard", "viewer"), ("/files", "Files", "viewer"),
                  ("/actions", "Actions", "viewer"), ("/ad/plans", "AD plans", "viewer"),
                  ("/ad/changes", "AD changes", "viewer"), ("/drift", "Drift", "viewer"), ("/requests", "Requests", "operator|auditor"),
+                 ("/admin/notifications", "Alerts", "admin|auditor"),
                  ("/admin/users", "Users", "admin"), ("/admin/audit", "Audit", "admin|auditor")],
 }
 

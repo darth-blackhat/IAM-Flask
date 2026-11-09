@@ -30,6 +30,12 @@ def register(app: Flask) -> None:
         f = store.file(file_sha) or {}
         ReceiptOutbox(db).add(from_plan(store.plan(plan_id), f.get("name")))
     store, requests = ConsumerStore(db), OperatorRequests(db)
+
+    @app.get("/admin/notifications")
+    @require_role("admin|auditor")
+    def notifications_page():
+        from ..notify import EVENTS, Notifications
+        return render_template("p_notifications.html", rows=Notifications(db).recent(200), events=EVENTS)
     target = settings.consumer_target
     drift_t = db.tables.drift_reports
 
