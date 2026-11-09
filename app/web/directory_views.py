@@ -29,7 +29,8 @@ SINGULAR = {"user": "user", "group": "group", "organization": "organization", "r
 SCAN = 5000           # snapshot rows scanned for one page
 FORM_FIELDS = ("via", "kind", "op", "name", "new_name", "description", "org_type", "first_name", "last_name",
                "email", "login", "title", "domain", "member_kind", "member", "jira_ticket", "reason",
-               "expires_on")
+               "expires_on", "department", "company", "manager", "account_expires", "group_scope",
+               "group_type")
 
 
 # Bulk import: CSV columns per format. Lists (groups, roles, organizations) use ";".

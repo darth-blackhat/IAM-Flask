@@ -71,7 +71,8 @@ def test_requests_are_validated_strictly():
     bad = [
         {"via": "ad", "kind": "group", "op": "enable", "name": "G"},                 # users only
         {"via": "ad", "kind": "user", "op": "create", "name": "E1"},                 # no names
-        {"via": "ad", "kind": "group", "op": "update", "name": "G", "new_name": "H"},  # AD rename
+        {"via": "ad", "kind": "user", "op": "update", "name": "E1", "new_name": "E2",
+         "first_name": "A", "last_name": "B"},                                        # users are not renamed
         {"via": "ad", "kind": "role", "op": "add_member", "name": "R", "member_kind": "group",
          "member": "G"},                                                              # nesting: groups only
         {"via": "ad", "kind": "group", "op": "create", "name": "G\nx"},             # control char

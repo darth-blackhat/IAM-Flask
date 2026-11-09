@@ -31,6 +31,39 @@ DEFAULT_PROTECTED = [
     "Backup Operators", "Server Operators", "Print Operators", "Group Policy Creator Owners",
     "Cert Publishers", "Key Admins", "Enterprise Key Admins", "DnsAdmins", "Domain Controllers",
     "Read-only Domain Controllers", "Protected Users"]
+# groupType bits: scope + security. Values are signed 32-bit, as AD stores them.
+GROUP_SCOPE = {"global": 0x2, "domain_local": 0x4, "universal": 0x8}
+GROUP_SECURITY = 0x80000000
+NEVER_EXPIRES = "9223372036854775807"
+
+
+def group_type(scope: str | None, category: str | None) -> int:
+    value = GROUP_SCOPE.get((scope or "global").lower(), 0x2)
+    if (category or "security").lower() == "security":
+        value |= GROUP_SECURITY
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+def filetime_end_of(day: str) -> str:
+    """YYYY-MM-DD -> AD accountExpires (100 ns since 1601, UTC): the account works through that day."""
+    from datetime import date, datetime, timedelta, timezone
+    end = datetime.combine(date.fromisoformat(day) + timedelta(days=1), datetime.min.time(), timezone.utc)
+    return str(int((end - datetime(1601, 1, 1, tzinfo=timezone.utc)).total_seconds() * 10_000_000))
+
+
+class PlacementTarget(BaseModel):
+    users_ou: str | None = None
+    groups_ou: str | None = None
+    ous_base: str | None = None
+
+
+class Placement(BaseModel):
+    """Where new objects go. Unlisted domains use users_ou / groups_ou / ous_base."""
+    domains: dict[str, PlacementTarget] = {}
+    # Organization type (businessCategory, e.g. "Branch") -> parent OU for new OUs of that type.
+    org_types: dict[str, str] = {}
+
+
 CLASS_FILTER = {"user": "(&(objectClass=user)(!(objectClass=computer)))",
                 "group": "(objectClass=group)", "organizationalUnit": "(objectClass=organizationalUnit)"}
 
@@ -54,6 +87,7 @@ class AdConfig(BaseModel):
     timeout_seconds: int = 15
     # Alert on changes made in AD without the consumer (see ad_watch.py).
     watch: "AdWatchConfig" = Field(default_factory=lambda: AdWatchConfig())
+    placement: Placement = Placement()
 
     @model_validator(mode="after")
     def _check(self) -> "AdConfig":
@@ -61,6 +95,10 @@ class AdConfig(BaseModel):
         for name in ("users_ou", "groups_ou", "ous_base"):
             if not getattr(self, name).lower().endswith(base):
                 raise ValueError(f"ad.{name} must be under base_dn")
+        targets = [v for t in self.placement.domains.values() for v in (t.users_ou, t.groups_ou, t.ous_base) if v]
+        for dn in targets + list(self.placement.org_types.values()):
+            if not dn.lower().endswith(base):
+                raise ValueError(f"ad.placement: {dn} must be under base_dn")
         for s in self.servers:
             if s.lower().startswith("ldap://") and not (self.start_tls or self.allow_insecure):
                 raise ValueError(f"{s}: plain LDAP sends the password in clear; use ldaps://, "
@@ -174,14 +212,19 @@ class AdApplier:
                 return self._item(line, ldap="error", error=f"{obj['dn']} is outside base_dn")
 
             if op == "create":
+                attrs, notes = self._specials(conn, cls, ins.get("attributes") or {})
                 if obj:
-                    return self._modify_attrs(line, obj, ins.get("attributes") or {})
-                return self._plan_create(line, cls, key, ins.get("attributes") or {}, conn)
+                    return self._with_notes(self._modify_attrs(line, obj, attrs), notes)
+                return self._with_notes(self._plan_create(line, cls, key, attrs, conn), notes)
             if obj is None:
                 return self._item(line, ldap="error", error=f"not found in AD: {key}")
             if op == "update":
-                new = {c["attribute"]: c["new"] for c in ins.get("changes") or []}
-                return self._modify_attrs(line, obj, new)
+                new, notes = self._specials(conn, cls, {c["attribute"]: c["new"] for c in ins.get("changes") or []})
+                return self._with_notes(self._modify_attrs(line, obj, new), notes)
+            if op == "move":
+                return self._plan_move(line, cls, obj)
+            if op == "rename":
+                return self._plan_rename(conn, line, cls, obj)
             if op in ("enable", "disable"):
                 if cls != "user":
                     return self._item(line, ldap="error", error=f"{op} applies to users only")
@@ -208,6 +251,12 @@ class AdApplier:
         except AdError as e:
             return self._item(line, ldap="error", error=str(e))
 
+    @staticmethod
+    def _with_notes(item: dict[str, Any], notes: list[str]) -> dict[str, Any]:
+        if notes:
+            item["note"] = "; ".join(filter(None, [item.get("note"), *notes]))
+        return item
+
     def _modify_attrs(self, line: dict, obj: dict, wanted: dict[str, Any]) -> dict[str, Any]:
         changes = {}
         for attr, value in wanted.items():
@@ -223,6 +272,64 @@ class AdApplier:
             return self._item(line, ldap="noop", dn=obj["dn"])
         return self._item(line, ldap="modify", dn=obj["dn"], changes=changes)
 
+    def _target_ou(self, cls: str, domain: str | None, attrs: dict | None = None) -> str:
+        t = self.cfg.placement.domains.get(domain or "") or PlacementTarget()
+        if cls == "user":
+            return t.users_ou or self.cfg.users_ou
+        if cls == "group":
+            return t.groups_ou or self.cfg.groups_ou
+        kind = (attrs or {}).get("businessCategory")
+        return self.cfg.placement.org_types.get(str(kind)) if kind in self.cfg.placement.org_types \
+            else (t.ous_base or self.cfg.ous_base)
+
+    def _specials(self, conn: Connection, cls: str, attrs: dict[str, Any],
+                  pending: dict | None = None) -> tuple[dict[str, Any], list[str]]:
+        """Producer-friendly values -> what AD stores: manager (employee id -> DN),
+        accountExpires (date -> FILETIME), groupScope / groupCategory -> groupType."""
+        out, notes = dict(attrs), []
+        if "manager" in out:
+            emp = out.pop("manager")
+            if emp:
+                found = self._find(conn, "user", {"employeeID": emp})
+                if found:
+                    out["manager"] = found["dn"]
+                else:
+                    notes.append(f"manager {emp} not found in AD: left unchanged")
+        if "accountExpires" in out:
+            day = out.pop("accountExpires")
+            out["accountExpires"] = NEVER_EXPIRES if day in ("never", "") else filetime_end_of(str(day))
+        if cls == "group" and ("groupScope" in out or "groupCategory" in out):
+            out["groupType"] = str(group_type(out.pop("groupScope", None), out.pop("groupCategory", None)))
+        return out, notes
+
+    def _plan_move(self, line: dict, cls: str, obj: dict) -> dict[str, Any]:
+        ins = line["instruction"]
+        target = self._target_ou(cls, ins.get("domain") or line.get("domain"))
+        rdn, _, parent = obj["dn"].partition(",")
+        if parent.lower() == target.lower():
+            return self._item(line, ldap="noop", dn=obj["dn"])
+        return self._item(line, ldap="move", dn=obj["dn"], rdn=rdn, new_superior=target,
+                          new_dn=f"{rdn},{target}")
+
+    def _plan_rename(self, conn: Connection, line: dict, cls: str, obj: dict) -> dict[str, Any]:
+        new = str(line["instruction"].get("new_name") or "").strip()
+        if not new:
+            return self._item(line, ldap="error", error="rename without a new name")
+        if cls == "user":
+            return self._item(line, ldap="error", error="users are not renamed (their key is the employee id)")
+        attr = "OU" if cls == "organizationalUnit" else "CN"
+        rdn = f"{attr}={escape_rdn(new)}"
+        old_rdn, _, parent = obj["dn"].partition(",")
+        if old_rdn.lower() == rdn.lower():
+            return self._item(line, ldap="noop", dn=obj["dn"])
+        if new.lower() in self.protected:
+            return self._item(line, ldap="error", error="will not rename to a protected group's name")
+        if self._find(conn, cls, {attr.lower(): new}):
+            return self._item(line, ldap="error", dn=obj["dn"], error=f"{new} already exists in AD")
+        changes = {"sAMAccountName": [(MODIFY_REPLACE, [new[:256]])]} if cls == "group" else {}
+        return self._item(line, ldap="rename", dn=obj["dn"], new_rdn=rdn, new_dn=f"{rdn},{parent}",
+                          changes=changes)
+
     def _plan_create(self, line: dict, cls: str, key: dict, attrs: dict, conn: Connection) -> dict:
         (key_attr, key_value), = key.items()
         if key_attr == "openiamId":
@@ -232,10 +339,11 @@ class AdApplier:
         if cls == "user":
             given, sn = attrs.get("givenName", ""), attrs.get("sn", "")
             cn = attrs.get("displayName") or f"{given} {sn}".strip() or str(key_value)
-            dn = f"CN={escape_rdn(cn)},{self.cfg.users_ou}"
+            users_ou = self._target_ou("user", line.get("domain"))
+            dn = f"CN={escape_rdn(cn)},{users_ou}"
             conn.search(dn, "(objectClass=*)", BASE, attributes=["cn"])
             if conn.response and any(e.get("type") == "searchResEntry" for e in conn.response):
-                dn = f"CN={escape_rdn(f'{cn} ({key_value})')},{self.cfg.users_ou}"   # name clash
+                dn = f"CN={escape_rdn(f'{cn} ({key_value})')},{users_ou}"   # name clash
             sam = str(attrs.get("sAMAccountName") or key_value)[:20]
             attrs.update({"cn": cn, "sAMAccountName": sam,
                           # Created disabled: AD cannot enable an account without a password.
@@ -245,11 +353,12 @@ class AdApplier:
             object_class = ["top", "person", "organizationalPerson", "user"]
         elif cls == "group":
             cn = str(key_value)
-            dn = f"CN={escape_rdn(cn)},{self.cfg.groups_ou}"
-            attrs.update({"cn": cn, "sAMAccountName": cn[:256], "groupType": str(GLOBAL_SECURITY_GROUP)})
+            dn = f"CN={escape_rdn(cn)},{self._target_ou('group', line.get('domain'))}"
+            attrs.setdefault("groupType", str(GLOBAL_SECURITY_GROUP))
+            attrs.update({"cn": cn, "sAMAccountName": cn[:256]})
             object_class = ["top", "group"]
         else:
-            dn = f"OU={escape_rdn(str(key_value))},{self.cfg.ous_base}"
+            dn = f"OU={escape_rdn(str(key_value))},{self._target_ou('organizationalUnit', line.get('domain'), attrs)}"
             object_class = ["top", "organizationalUnit"]
         return self._item(line, ldap="add", dn=dn, object_class_values=object_class,
                           attributes={k: str(v) for k, v in attrs.items()})
@@ -296,7 +405,13 @@ class AdApplier:
                     ok = conn.modify(item["dn"], item["changes"])
                 elif kind == "delete":
                     ok = conn.delete(item["dn"])
-                if kind in ("add", "modify", "delete") and not ok:
+                elif kind == "move":
+                    ok = conn.modify_dn(item["dn"], item["rdn"], new_superior=item["new_superior"])
+                elif kind == "rename":
+                    ok = conn.modify_dn(item["dn"], item["new_rdn"])
+                    if ok and item.get("changes"):
+                        ok = conn.modify(item["new_dn"], item["changes"])
+                if kind in ("add", "modify", "delete", "move", "rename") and not ok:
                     item["error"] = f"{conn.result.get('description')}: {conn.result.get('message')}"
                 item["ok"] = bool(ok) and kind != "error"
                 items.append(item)
@@ -313,4 +428,4 @@ def summarize(items: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def change_count(items: list[dict[str, Any]]) -> int:
-    return sum(1 for i in items if i["ldap"] in ("add", "modify", "delete"))
+    return sum(1 for i in items if i["ldap"] in ("add", "modify", "delete", "move", "rename"))

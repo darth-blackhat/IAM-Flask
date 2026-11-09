@@ -71,6 +71,14 @@ class DirectoryRequest(BaseModel):
     new_name: str | None = None          # rename (OpenIAM only)
     description: str | None = None
     org_type: str | None = None          # organizations only: a key of ORG_TYPES
+    # Users: more AD attributes. manager = the manager's employee id.
+    department: str | None = None
+    company: str | None = None
+    manager: str | None = None
+    account_expires: str | None = None   # YYYY-MM-DD (the account works through that day) or "never"
+    # Groups: AD scope and type.
+    group_scope: Literal["global", "domain_local", "universal"] | None = None
+    group_type: Literal["security", "distribution"] | None = None
     first_name: str | None = None
     last_name: str | None = None
     email: str | None = None
@@ -160,8 +168,17 @@ class DirectoryRequest(BaseModel):
         if self.new_name:
             if self.kind == "user" or self.op != "update":
                 raise ValueError("only a group, role or organization can be renamed (with update)")
-            if self.via == "ad":
-                raise ValueError("the consumer does not rename AD objects; rename via OpenIAM")
+        if self.kind != "user" and any((self.department, self.company, self.manager, self.account_expires)):
+            raise ValueError("department, company, manager and account expiry are user attributes")
+        if self.kind not in ("group", "role") and (self.group_scope or self.group_type):
+            raise ValueError("scope and type apply to groups")
+        if self.account_expires and self.account_expires != "never":
+            try:
+                date.fromisoformat(self.account_expires)
+            except ValueError:
+                raise ValueError("account expiry must be YYYY-MM-DD or never") from None
+        if self.manager and self.manager == self.name:
+            raise ValueError("a user cannot be their own manager")
         return self
 
 
@@ -344,6 +361,18 @@ class DirectoryService:
                            organizations=(req.organizations or None) if is_hire else None,
                            reason=f"{req.jira_ticket}: {req.reason}")
         r = await self.producer.process(ev)
+        extra_ad = {k: v for k, v in (("department", req.department), ("company", req.company),
+                                      ("manager", req.manager), ("accountExpires", req.account_expires)) if v}
+        if r.ok and extra_ad and req.op in ("create", "update"):
+            # OpenIAM has no place for these: they go to AD as an update after the user record.
+            cls = self.ad.classes.get("user")
+            mapped = self.ad.map("user", extra_ad)
+            if cls and mapped:
+                ins = instruction("update", cls, self._key("user", req.name, r.user_id), r.user_id,
+                                  changes=[{"attribute": a, "old": None, "new": v} for a, v in mapped.items()],
+                                  source="web", why={"source": "web-operator", "summary": f"{req.jira_ticket}: AD attributes"})
+                self._queue(req, out, [ins], r.user_id)
+                r.instructions.append(ins)
         out.update(actions=r.actions, warnings=r.warnings, instructions=len(r.instructions),
                    instruction_ids=[i["instruction_id"] for i in r.instructions],
                    user_id=r.user_id, producer_event=ev.event_id)
@@ -441,10 +470,13 @@ class DirectoryService:
         """The request as OpenIAM-style fields, for the AD attribute mapping."""
         if req.kind == "user":
             flat = {"employeeId": req.name, "firstName": req.first_name, "lastName": req.last_name,
-                    "email": req.email, "login": req.login, "title": req.title}
+                    "email": req.email, "login": req.login, "title": req.title,
+                    "department": req.department, "company": req.company, "manager": req.manager,
+                    "accountExpires": req.account_expires}
         else:
             flat = {"name": req.name, "description": req.description,
-                    "organizationType": ORG_TYPES.get(req.org_type or "")}
+                    "organizationType": ORG_TYPES.get(req.org_type or ""),
+                    "groupScope": req.group_scope, "groupCategory": req.group_type}
         return {k: v for k, v in flat.items() if v not in (None, "")}
 
     def _key(self, kind: str, name: str, openiam_id: str | None) -> dict[str, Any]:
@@ -470,9 +502,14 @@ class DirectoryService:
             key_attr = next(iter(key))
             changes = [{"attribute": a, "old": None, "new": v}
                        for a, v in self.ad.map(req.kind, flat).items() if a != key_attr]
+            out_ins = [instruction("update", cls, key, oid, changes=changes, **common)] if changes else []
+            if req.kind == "user" and req.domain:
+                # The consumer moves the account to the OU it places this domain in (no-op if there).
+                out_ins.append(instruction("move", cls, key, oid, domain=req.domain, **common))
             if req.new_name:
-                out["warnings"].append("AD keeps the old name: the consumer does not rename objects")
-            return [instruction("update", cls, key, oid, changes=changes, **common)] if changes else []
+                # Last: the object is found by its old name, then renamed.
+                out_ins.append(instruction("rename", cls, key, oid, new_name=req.new_name, **common))
+            return out_ins
         if req.op == "delete":
             op = self.ad.on_user_delete if req.kind == "user" else "delete"
             return [instruction(op, cls, key, oid, **common)]

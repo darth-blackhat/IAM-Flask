@@ -498,7 +498,7 @@ pattern="[A-Za-z][A-Za-z0-9_]{1,9}-[1-9][0-9]{0,8}" title="Jira issue key, e.g. 
 <span class="chip">{{ 'OpenIAM + AD' if p.via == 'openiam' else 'AD only' }}</span>
 {% if p.domain %}<span class="chip">domain {{ p.domain }}</span>{% endif %}
 {% if p.reason %}<div><b>Justification:</b> {{ p.reason }}</div>{% endif %}
-{% for k in ['org_type','first_name','last_name','email','login','title','description','expires_on'] %}{% if p[k] %}<div class="muted">{{ k }}: {{ p[k] }}</div>{% endif %}{% endfor %}
+{% for k in ['org_type','first_name','last_name','email','login','title','department','company','manager','account_expires','group_scope','group_type','description','expires_on','new_name'] %}{% if p[k] %}<div class="muted">{{ k }}: {{ p[k] }}</div>{% endif %}{% endfor %}
 {% for k in ['groups','roles','organizations'] %}{% if p[k] %}<div class="muted">{{ k }}: {{ p[k]|join(', ') }}</div>{% endif %}{% endfor %}{% endif %}{% endmacro %}"""
 
 P_DIRECTORY = """{% extends "base.html" %}{% block title %}{{ labels[kind] }}{% endblock %}{% block body %}
@@ -539,12 +539,19 @@ P_DIR_NEW = """{% extends "base.html" %}{% import "dir_macros.html" as m with co
 <label>Email<input name="email" type="email" maxlength="256"></label>
 <label>Login (sAMAccountName)<input name="login" maxlength="20" data-suggest></label>
 <label>Title<input name="title"></label>
+<label>Department<input name="department" maxlength="256"></label>
+<label>Company<input name="company" maxlength="256"></label>
+<label>Manager (employee id)<input name="manager" maxlength="256"></label>
+<label>Account expires (optional)<input name="account_expires" type="date"></label>
 <label>Domain<input name="domain" list="domains"></label>
 <label>Groups (comma separated)<input name="groups"></label>
 <label>Organizations / OUs (comma separated)<input name="organizations"></label>
 <label>Roles (comma separated)<input name="roles"></label>
 {% else %}
 <label>Name *<input name="name" required maxlength="256"></label>
+{% if kind in ('group', 'role') %}<label>AD scope<select name="group_scope"><option value="">global (default)</option>
+<option value="domain_local">domain local</option><option value="universal">universal</option></select></label>
+<label>AD type<select name="group_type"><option value="">security (default)</option><option value="distribution">distribution</option></select></label>{% endif %}
 {% if kind == 'organization' %}<label>Type *<select name="org_type" required>
 {% for k, l in org_types.items() %}<option value="{{ k }}">{{ l }}</option>{% endfor %}</select></label>{% endif %}
 <label>Description<input name="description" maxlength="1024"></label>
@@ -580,8 +587,12 @@ P_DIR_OBJECT = """{% extends "base.html" %}{% import "dir_macros.html" as m with
 <label>Email<input name="email" type="email" value="{{ rec.email if rec and rec.email is string else '' }}"></label>
 <label>Login<input name="login" maxlength="20" value="{{ rec.login if rec and rec.login is string else '' }}"></label>
 <label>Title<input name="title" value="{{ rec.title if rec and rec.title is string else '' }}"></label>
+<label>Department<input name="department" maxlength="256" value="{{ rec.department if rec and rec.department is string else '' }}"></label>
+<label>Company<input name="company" maxlength="256" value="{{ rec.company if rec and rec.company is string else '' }}"></label>
+<label>Manager (employee id)<input name="manager" maxlength="256"></label>
+<label>Account expires<input name="account_expires" type="date"></label>
 {% else %}
-<label>Rename to (OpenIAM only)<input name="new_name" value="{{ name }}"></label>
+<label>Rename to<input name="new_name" value="{{ name }}"></label>
 {% if kind == 'organization' %}<label>Type<select name="org_type"><option value="">(unchanged)</option>
 {% for k, l in org_types.items() %}<option value="{{ k }}" {{ 'selected' if k == org_type }}>{{ l }}</option>{% endfor %}</select></label>{% endif %}
 <label>Description<input name="description" value="{{ rec.description if rec and rec.description is string else '' }}"></label>

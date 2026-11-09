@@ -9,7 +9,8 @@ Instruction shape:
   {"instruction_id", "op", "object_class", "key": {<ad attr>: value}, "openiam_id",
    "attributes"?, "changes"?: [{"attribute", "old", "new"}], "target"?, "reason"?,
    "effective_date"?, "source"}
-ops: create, update, delete, enable, disable, add_member, remove_member
+ops: create, update, delete, enable, disable, add_member, remove_member,
+     move (to the OU the consumer places the instruction's `domain` in), rename (`new_name`)
 """
 
 import uuid
@@ -20,8 +21,14 @@ from pydantic import BaseModel
 DEFAULT_ATTRIBUTES: dict[str, dict[str, str]] = {
     "user": {"firstName": "givenName", "lastName": "sn", "middleInit": "initials",
              "nickname": "displayName", "title": "title", "login": "sAMAccountName",
-             "email": "mail", "employeeId": "employeeID", "phone": "telephoneNumber"},
-    "group": {"name": "cn", "description": "description"},
+             "email": "mail", "employeeId": "employeeID", "phone": "telephoneNumber",
+             # The consumer turns these into what AD stores: manager (employee id -> DN),
+             # accountExpires (date -> FILETIME).
+             "department": "department", "company": "company", "manager": "manager",
+             "accountExpires": "accountExpires"},
+    "group": {"name": "cn", "description": "description",
+              # -> groupType on the consumer (scope + security / distribution)
+              "groupScope": "groupScope", "groupCategory": "groupCategory"},
     "role": {"name": "cn", "description": "description"},
     "organization": {"name": "ou", "description": "description",
                      "organizationType": "businessCategory"},

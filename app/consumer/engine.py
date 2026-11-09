@@ -385,6 +385,7 @@ class Consumer:
             items = await asyncio.to_thread(self.ad.apply, lines)
             plan_status = "applied" if all(i["ok"] for i in items) else "partial"
             await self._own_writes(items)
+            self._activation(items, domain)
         summary = {"ad_instructions": len(lines), "changes": changes, **summarize(items)}
         plan_id = self.store.save_plan(file_sha256=sha, domain=domain, mode=cfg.mode,
                                        status=plan_status, lines=lines, items=items, summary=summary,
@@ -395,10 +396,20 @@ class Consumer:
             plan_status, plan_status)
         return summary, file_status
 
+    def _activation(self, items: list[dict], domain: str | None) -> None:
+        """New AD users are created disabled (this tool never sets passwords): tell the people
+        who give them a first password and enable them."""
+        made = [i.get("dn") for i in items if i.get("ok") and i["ldap"] == "add" and i.get("object_class") == "user"]
+        if made:
+            emit(self.store.db, "ad.account_needs_activation", f"{len(made)} new AD account(s) to activate",
+                 "Created disabled. Set a first password and enable them (helpdesk / OpenIAM password reset):\n"
+                 + "\n".join(made[:50]), {"domain": domain, "dns": made[:200]})
+
     async def _own_writes(self, items: list[dict]) -> None:
         """Tell the watcher what the consumer itself just changed, so it does not alert."""
         if self.watcher is not None:
-            dns = [i.get("dn") for i in items if i.get("ok") and i["ldap"] in ("add", "modify")]
+            dns = [i.get("new_dn") or i.get("dn") for i in items
+                   if i.get("ok") and i["ldap"] in ("add", "modify", "move", "rename")]
             await asyncio.to_thread(self.watcher.record_own, dns)
 
     async def watch_ad(self) -> dict[str, Any]:
@@ -431,6 +442,7 @@ class Consumer:
             raise ConsumerError("this consumer has no AD target")
         items = await asyncio.to_thread(self.ad.apply, plan["lines"])
         await self._own_writes(items)
+        self._activation(items, plan["domain"])
         status = "applied" if all(i["ok"] for i in items) else "partial"
         summary = {**plan["summary"], **summarize(items), "applied_by": by}
         self.store.update_plan(plan_id, status=status, items=items, summary=summary,

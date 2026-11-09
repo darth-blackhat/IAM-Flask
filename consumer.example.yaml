@@ -85,6 +85,16 @@ directories:
 #   users_ou: OU=Users,OU=IAM,DC=corp,DC=example
 #   groups_ou: OU=Groups,OU=IAM,DC=corp,DC=example
 #   ous_base: OU=IAM,DC=corp,DC=example
+#   # Where new objects go (optional). A user whose domain changes is moved to its
+#   # domain's OU; new OUs go under the parent of their organization type.
+#   placement:
+#     domains:
+#       lagos: { users_ou: "OU=Users,OU=Lagos,DC=corp,DC=example",
+#                groups_ou: "OU=Groups,OU=Lagos,DC=corp,DC=example" }
+#     org_types:
+#       Branch: OU=Branches,DC=corp,DC=example
+#   # New users are created DISABLED (this tool never sets passwords): an
+#   # ad.account_needs_activation notification lists them for the helpdesk.
 #   upn_suffix: corp.example
 #   mode: approve            # dry_run | approve (operator approves each plan in the UI) | auto
 #   max_changes_auto: 100    # auto mode: bigger plans still wait for approval

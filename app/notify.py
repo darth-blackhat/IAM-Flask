@@ -59,6 +59,7 @@ EVENTS = {
     "ad.changed_outside": "AD was changed outside the consumer",
     "ad.protected_group_changed": "A protected AD group (e.g. Domain Admins) changed",
     "drift.found": "A drift report found differences",
+    "ad.account_needs_activation": "New AD accounts were created disabled and need a first password",
 }
 MAX_ATTEMPTS = 10
 PRESETS = {
