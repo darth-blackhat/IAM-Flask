@@ -196,6 +196,7 @@ def define_tables(metadata: MetaData) -> SimpleNamespace:
         Column("result", JsonType),
         Column("approvals", JsonType),           # [{"by", "at", "note"}] so far
         Column("required_approvals", Integer),    # 2 for destructive / bulk changes
+        Column("checks", JsonType),               # e.g. {"jira": {...}} looked up while it waits
         Column("decided_by", String(120)),       # who approved / rejected it
         Column("decided_at", Float),
         Column("decision_note", Text),

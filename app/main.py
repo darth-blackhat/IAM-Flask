@@ -136,9 +136,12 @@ async def lifespan(app: FastAPI):
     notify_cfg = load_notify_config(settings.notify_config_path)
     if notify_cfg is not None and settings.notify_poll_seconds > 0:
         tasks.append(asyncio.create_task(_notify_loop(Notifier(db, notify_cfg), settings.notify_poll_seconds)))
+    jira = Jira(settings)
+    if jira.active:
+        tasks.append(asyncio.create_task(_jira_loop(db, jira)))
     tasks.append(asyncio.create_task(_watch_loop(
         db, reports_folder=settings.reports_folder,
-        receipts=app.state.sync.cfg.receipts if app.state.sync is not None else None)))
+        receipts=app.state.sync.cfg.receipts if app.state.sync is not None else None, settings=settings)))
     logger.info("backend-iam started: openiam={} sync={} producer={} scheduler={}",
                 settings.openiam_base_url, app.state.sync is not None,
                 app.state.producer is not None, settings.sync_schedule)
@@ -170,6 +173,19 @@ async def _operator_loop(requests: OperatorRequests, service: str, handlers: dic
         await asyncio.sleep(every)
 
 
+async def _jira_loop(db: Database, jira: Jira, every: float = 30.0) -> None:
+    """Keep the Jira status of waiting requests fresh for approvers."""
+    from .jira import annotate_waiting
+    while True:
+        try:
+            await annotate_waiting(db, jira)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Jira status of waiting requests")
+        await asyncio.sleep(every)
+
+
 async def _notify_loop(notifier: Notifier, every: float) -> None:
     """Deliver queued notifications (email / webhooks)."""
     while True:
@@ -183,15 +199,19 @@ async def _notify_loop(notifier: Notifier, every: float) -> None:
 
 
 async def _watch_loop(db: Database, every: float = 300.0, reports_folder: str = "data/reports",
-                      receipts: Any = None) -> None:
+                      receipts: Any = None, settings: Settings | None = None) -> None:
     """Every 5 minutes: end expired time-limited access. Hourly: alert on a broken audit
     chain and on overdue access reviews."""
     from .directory import expire_grants
     from .governance import Governance
     from .notify import Notifications
     from .security import AuditTrail
+    from .maintenance import DailyPurge
     last_bad, last_hourly = None, 0.0
+    purge = DailyPurge(db, settings) if settings is not None else None
     while True:
+        if purge is not None:
+            await asyncio.to_thread(purge.maybe_run)    # retention: at most once a day
         try:
             for rid in await asyncio.to_thread(expire_grants, db):
                 logger.info("time-limited access ended: removal request {}", rid)

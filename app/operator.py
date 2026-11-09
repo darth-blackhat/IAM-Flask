@@ -136,6 +136,16 @@ class OperatorRequests:
             conn.execute(update(self.t).where(c.id == request_id).values(**values))
         return values.get("status", "awaiting_approval")
 
+    def waiting(self, service: str) -> list[dict[str, Any]]:
+        c = self.t.c
+        with self.db.begin() as conn:
+            return [dict(r._mapping) for r in conn.execute(
+                select(self.t).where(c.service == service, c.status == "awaiting_approval").order_by(c.id))]
+
+    def set_checks(self, request_id: int, checks: dict[str, Any]) -> None:
+        with self.db.begin() as conn:
+            conn.execute(update(self.t).where(self.t.c.id == request_id).values(checks=checks))
+
     def awaiting(self, service: str) -> int:
         c = self.t.c
         with self.db.begin() as conn:

@@ -158,24 +158,35 @@ class UnsafeTarget(ValueError):
     pass
 
 
-def check_target(url: str, *, allow_http: bool = False, allow_private: bool = False) -> None:
-    """Refuse URLs that could reach internal systems (SSRF)."""
+def check_target(url: str, *, allow_http: bool = False, allow_private: bool = False) -> str:
+    """Refuse URLs that could reach internal systems (SSRF). Returns the checked address:
+    the request must connect to exactly that one (no second DNS lookup to rebind)."""
     u = urlparse(url)
     if u.scheme not in (("https", "http") if allow_http else ("https",)):
         raise UnsafeTarget(f"{url}: https only")
     if not u.hostname or u.username or u.password:
         raise UnsafeTarget(f"{url}: needs a host and no credentials in the URL")
-    if allow_private:
-        return
     try:
         infos = socket.getaddrinfo(u.hostname, u.port or (443 if u.scheme == "https" else 80),
                                    proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise UnsafeTarget(f"{u.hostname}: cannot resolve ({e})") from None
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if not ip.is_global or ip.is_multicast:
-            raise UnsafeTarget(f"{u.hostname} resolves to non-public {ip}; set allow_private to permit it")
+    ips = [ipaddress.ip_address(info[4][0]) for info in infos]
+    if not allow_private:
+        for ip in ips:
+            if not ip.is_global or ip.is_multicast:
+                raise UnsafeTarget(f"{u.hostname} resolves to non-public {ip}; set allow_private to permit it")
+    return str(ips[0])
+
+
+def pinned(url: str, ip: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """URL aimed at the checked address, with the original host for Host and TLS SNI
+    (so the certificate is still verified against the real name)."""
+    u = urlparse(url)
+    host_ip = f"[{ip}]" if ":" in ip else ip
+    netloc = host_ip + (f":{u.port}" if u.port else "")
+    host_header = u.hostname + (f":{u.port}" if u.port else "")
+    return u._replace(netloc=netloc).geturl(), {"Host": host_header}, {"sni_hostname": u.hostname}
 
 
 def sign(body: bytes, secret: str) -> str:
@@ -217,10 +228,12 @@ class Notifier:
         return sent
 
     async def _post(self, hook: Webhook, values: dict[str, Any]) -> None:
-        check_target(hook.url, allow_http=hook.allow_http, allow_private=hook.allow_private)
+        ip = check_target(hook.url, allow_http=hook.allow_http, allow_private=hook.allow_private)
+        url, pin_headers, extensions = pinned(hook.url, ip)
         payload = render_template(hook.template, values)
         body = (payload if isinstance(payload, str) else json.dumps(payload)).encode()
-        headers = {"Content-Type": "application/json", "User-Agent": "backend-iam-notify", **hook.headers}
+        headers = {"Content-Type": "application/json", "User-Agent": "backend-iam-notify", **hook.headers,
+                   **pin_headers}
         if hook.secret_env:
             secret = self.env.get(hook.secret_env)
             if not secret:
@@ -228,7 +241,7 @@ class Notifier:
             headers["X-Signature"] = sign(body, secret)
         async with httpx.AsyncClient(timeout=hook.timeout_seconds, follow_redirects=False,
                                      transport=self.transport) as client:
-            async with client.stream("POST", hook.url, content=body, headers=headers) as r:
+            async with client.stream("POST", url, content=body, headers=headers, extensions=extensions) as r:
                 read = 0
                 async for chunk in r.aiter_bytes():     # drain at most 64 KB, never more
                     read += len(chunk)

@@ -175,3 +175,23 @@ def test_overdue_campaign_reported_once(database):
         conn.execute(t.update().where(t.c.id == cid).values(due_at=time.time() - 10))
     assert [c["id"] for c in gov.overdue_campaigns()] == [cid]
     assert gov.overdue_campaigns() == []
+
+
+def test_webhook_connects_to_the_checked_address_only(database, monkeypatch):
+    """DNS rebinding: the first lookup says public, a second would say 127.0.0.1. Only one
+    lookup happens and the request goes to the checked address, Host / SNI unchanged."""
+    import socket
+    answers = iter(["93.184.216.34", "127.0.0.1"])
+
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (next(answers), port))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    seen = []
+
+    def handle(request):
+        seen.append((request.url.host, request.headers["Host"], request.extensions.get("sni_hostname")))
+        return httpx.Response(200)
+    cfg = NotifyConfig(webhooks=[Webhook(name="h", url="https://hooks.example.com:8443/x")])
+    Notifications(database).add("sod.blocked", "t", "x")
+    assert run(Notifier(database, cfg, env={}, transport=httpx.MockTransport(handle)).run_pending()) == 1
+    assert seen == [("93.184.216.34", "hooks.example.com:8443", "hooks.example.com")]

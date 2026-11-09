@@ -440,6 +440,13 @@ def register(app: Flask) -> None:
             abort(404)
         note = (request.form.get("note") or "").strip()[:1000] or None
         pending = requests.get(request_id)
+        jira_check = (pending or {}).get("checks", {}) or {}
+        if (decision == "approve" and pending and ext["settings"].jira_check == "enforce"
+                and not (jira_check.get("jira") or {}).get("ok")):
+            problem = (jira_check.get("jira") or {}).get("problem") or "its Jira status has not been checked yet (try again in a minute)"
+            record("directory.approve", ok=False, target=str(request_id), detail=f"Jira: {problem}")
+            flash(f"Cannot approve: {problem}.", "error")
+            return redirect("/approvals")
         if pending and not in_scope(g.user.get("approver_scope"), pending["params"] or {}):
             record(f"directory.{decision}", ok=False, target=str(request_id), detail="outside approver scope")
             flash("This change is outside the domains / organizations you may approve.", "error")

@@ -48,10 +48,17 @@ class Jira:
 
     async def check(self, key: str) -> dict[str, Any]:
         """{"ok", "status", "summary", "problem"}; raises JiraError only when enforce says stop."""
+        info = await self.lookup(key)
+        if not info["ok"] and self.mode == "enforce":
+            raise JiraError(info["problem"])
+        return info
+
+    async def lookup(self, key: str) -> dict[str, Any]:
+        """The ticket as Jira sees it, never raising: {"ok", "status", "summary", "problem"}."""
         if not JIRA_KEY.match(key or ""):
-            raise JiraError(f"{key!r} is not a Jira issue key")
+            return {"ok": False, "status": None, "summary": None, "problem": f"{key!r} is not a Jira issue key"}
         if not self.active:
-            return {"ok": True, "status": None, "problem": None}
+            return {"ok": True, "status": None, "summary": None, "problem": None}
         try:
             async with self._client() as c:
                 r = await c.get(f"/rest/api/2/issue/{key}", params={"fields": "status,summary"})
@@ -69,9 +76,7 @@ class Jira:
                     problem = f"Jira ticket {key} is '{status}', not one of: {', '.join(sorted(self.allowed))}"
                 else:
                     return {"ok": True, "status": status, "summary": fields.get("summary"), "problem": None}
-        if self.mode == "enforce":
-            raise JiraError(problem)
-        return {"ok": False, "status": None, "problem": problem}
+        return {"ok": False, "status": None, "summary": None, "problem": problem}
 
     async def comment(self, key: str, text: str) -> None:
         if not (self.active and self.comment_enabled and JIRA_KEY.match(key or "")):
@@ -80,3 +85,24 @@ class Jira:
             r = await c.post(f"/rest/api/2/issue/{key}/comment", json={"body": text[:30000]})
             if r.status_code >= 300:
                 raise JiraError(f"comment on {key}: HTTP {r.status_code}")
+
+
+async def annotate_waiting(db: Any, jira: "Jira", every: float = 600.0) -> int:
+    """Look up the Jira ticket of every request waiting for approval (again every
+    `every` seconds), so approvers see its status before they decide."""
+    import time
+    from .operator import OperatorRequests
+    if not jira.active:
+        return 0
+    reqs, now, n = OperatorRequests(db), time.time(), 0
+    for r in reqs.waiting("producer"):
+        checks = dict(r["checks"] or {})
+        if now - (checks.get("jira") or {}).get("checked_at", 0) < every:
+            continue
+        key = (r["params"] or {}).get("jira_ticket")
+        if not key:
+            continue
+        info = await jira.lookup(key)
+        reqs.set_checks(r["id"], {**checks, "jira": {**info, "checked_at": now, "mode": jira.mode}})
+        n += 1
+    return n

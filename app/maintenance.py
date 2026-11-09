@@ -6,7 +6,6 @@ are purged: pending outbox events, dead events and current state are never touch
 """
 
 import time
-from typing import Any
 
 from sqlalchemy import delete, func, select
 
@@ -17,7 +16,8 @@ from .logs import logger
 DAY = 86400
 
 
-def _rules(db: Database, s: Settings) -> list[tuple[str, Any, Any, int]]:
+def _rules(db: Database, s: Settings) -> list[tuple]:
+    """(label, table, time column, days[, extra condition: only finished rows])."""
     t = db.tables
     return [
         ("delivered outbox events", t.sync_outbox, t.sync_outbox.c.delivered_at, s.retention_outbox_days),
@@ -31,6 +31,14 @@ def _rules(db: Database, s: Settings) -> list[tuple[str, Any, Any, int]]:
         ("operator requests", t.operator_requests, t.operator_requests.c.at, s.retention_runs_days),
         ("drift reports", t.drift_reports, t.drift_reports.c.at, s.retention_runs_days),
         ("audit trail", t.audit_trail, t.audit_trail.c.at, s.retention_audit_days),
+        ("notifications", t.notifications, t.notifications.c.at, s.retention_outbox_days,
+         t.notifications.c.status.in_(["sent", "dead"])),
+        ("receipts written (consumer)", t.consumer_receipts, t.consumer_receipts.c.written_at,
+         s.retention_outbox_days, t.consumer_receipts.c.status == "written"),
+        ("receipts received", t.ad_receipts, t.ad_receipts.c.received_at, s.retention_activity_days),
+        ("receipt statuses", t.ad_receipt_items, t.ad_receipt_items.c.at, s.retention_activity_days),
+        ("ended time-limited access", t.timed_grants, t.timed_grants.c.expires_at, s.retention_runs_days,
+         t.timed_grants.c.status == "expired"),
     ]
 
 
@@ -39,13 +47,16 @@ def purge(db: Database, settings: Settings, *, dry_run: bool = False,
     now = now or time.time()
     counts: dict[str, int] = {}
     with db.begin() as conn:
-        for label, table, column, days in _rules(db, settings):
+        for label, table, column, days, *extra in _rules(db, settings):
             if days <= 0:
                 continue
             cutoff = now - days * DAY
             cond = (column.is_not(None)) & (column < cutoff)
             if table is db.tables.operator_requests:
-                cond = cond & table.c.status.in_(["done", "failed"])
+                # Never what still waits for approval or still has to run.
+                cond = cond & table.c.status.in_(["done", "failed", "rejected"])
+            for e in extra:
+                cond = cond & e
             if dry_run:
                 counts[label] = conn.execute(select(func.count()).select_from(table).where(cond)).scalar()
             else:

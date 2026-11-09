@@ -643,7 +643,10 @@ instruction is queued until one is approved, and never by the person who asked. 
 consumer site still applies AD changes according to its own mode (dry run / approve / auto).</p>
 <div class="wrap"><table><tr><th>#</th><th>Asked</th><th>By</th><th>Change</th><th>Decision</th></tr>
 {% for r in waiting %}<tr><td>{{ r.id }}</td><td>{{ r.at|ts }}</td><td>{{ r.requested_by }}</td><td>{{ m.summary(r.params) }}</td>
-<td><div class="muted">approvals {{ (r.approvals or [])|length }} of {{ r.required_approvals or 1 }}{% for a in r.approvals or [] %} · {{ a.by }}{% endfor %}</div>
+<td>{% set jc = (r.checks or {}).get('jira') %}{% if jc %}<div class="small">Jira:
+{% if jc.ok and jc.status %}<span class="ok">{{ jc.status }}</span>{% elif jc.ok %}<span class="muted">not checked (JIRA_CHECK off)</span>{% else %}<span class="bad">{{ jc.problem }}</span>{% endif %}
+<span class="muted">· checked {{ jc.checked_at|ts }}</span></div>{% endif %}
+<div class="muted">approvals {{ (r.approvals or [])|length }} of {{ r.required_approvals or 1 }}{% for a in r.approvals or [] %} · {{ a.by }}{% endfor %}</div>
 {% if r.requested_by == me %}<span class="muted">your request: someone else must decide</span>
 {% elif not r.mine %}<span class="muted">outside your approval scope ({{ scope|join(', ') }})</span>
 {% elif r.approved_by_me %}<span class="muted">you approved; waiting for another approver</span>{% else %}
